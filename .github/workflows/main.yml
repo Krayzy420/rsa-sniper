@@ -1,0 +1,21 @@
+name: RSA Sniper Bot
+on:
+  schedule:
+    - cron: '*/30 * * * *' # This tells it to run every 30 minutes
+  workflow_dispatch: # This adds a "Run Now" button for testing
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.9'
+      - name: Install dependencies
+        run: pip install edgartools requests
+      - name: Run Sniper
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python rsa_sniper.py
