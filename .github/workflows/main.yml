@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install dependencies
-        run: pip install edgartools requests
+        run: pip install edgartools requests "hishel<0.1.0"
       - name: Run Sniper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
