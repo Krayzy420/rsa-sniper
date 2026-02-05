@@ -25,21 +25,14 @@ def send_telegram_msg(message):
     requests.get(url)
 
 def verify_roundup(text):
-    """
-    Secondary Validation: Returns True only if 'Round Up' logic 
-    exists without 'Cash' logic in the same vicinity.
-    """
-    # 1. Clean the text for easier reading
+    if not text:
+        return False
     clean_text = re.sub(r'\s+', ' ', text).lower()
-    
-    # 2. Find the 'Fractional' or 'Round' section (the next 500 characters)
     split_match = re.search(r"reverse (stock )?split", clean_text)
     if not split_match:
         return False
-        
-    context = clean_text[split_match.start():split_match.start() + 1000]
+    context = clean_text[split_match.start():split_match.start() + 1200]
     
-    # 3. Search for 'Guaranteed' phrases
     positive_patterns = [
         r"rounded up to the (nearest|next) whole share",
         r"rounding up",
@@ -48,45 +41,42 @@ def verify_roundup(text):
         r"elevated to the next",
         r"round lot"
     ]
+    negative_patterns = [r"cash in lieu", r"cash payment", r"fractional shares will be canceled"]
     
-    negative_patterns = [
-        r"cash in lieu",
-        r"cash payment",
-        r"no fractional shares will be issued", # Can be positive or negative; context matters
-        r"fractional shares will be canceled"
-    ]
-    
-    # Logic: Must have a positive pattern AND not have a negative pattern in the context
     has_positive = any(re.search(p, context) for p in positive_patterns)
     has_negative = any(re.search(p, context) for p in negative_patterns)
-    
-    # If it has a positive term and NO cash terms, it's a high-probability RSA
     return has_positive and not has_negative
 
 def run_rsa_sniper():
     seen_filings = load_seen_filings()
-    # Pulling 1000 filings for a complete daily safety net
-    filings = get_filings(form=["8-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]).latest(1000)
-    
     print(f"Deep scanning 1000 filings...")
+    
+    try:
+        filings = get_filings(form=["8-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]).latest(1000)
+    except Exception as e:
+        print(f"Error fetching filings: {e}")
+        return
 
     for filing in filings:
         if filing.accession_number in seen_filings:
             continue
             
-        full_text = filing.text()
-        
-        # Double-check the wording
-        if verify_roundup(full_text):
-            msg = (
-                f"🎯 *RSA GOLD DETECTED*\n"
-                f"Ticker: {filing.ticker}\n"
-                f"Company: {filing.company}\n"
-                f"Confidence: High (Verified Rounding)\n"
-                f"Link: {filing.url}"
-            )
-            send_telegram_msg(msg)
-            save_seen_filing(filing.accession_number)
+        try:
+            # SAFETY GATE: Check if text exists before processing
+            full_text = filing.text()
+            if full_text and verify_roundup(full_text):
+                msg = (
+                    f"🎯 *RSA GOLD DETECTED*\n"
+                    f"Ticker: {filing.ticker}\n"
+                    f"Company: {filing.company}\n"
+                    f"Link: {filing.url}"
+                )
+                send_telegram_msg(msg)
+                save_seen_filing(filing.accession_number)
+        except Exception as e:
+            # If one filing is broken, just skip it and move to the next
+            print(f"Skipping filing {filing.accession_number} due to error: {e}")
+            continue
 
 if __name__ == "__main__":
     run_rsa_sniper()
