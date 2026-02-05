@@ -27,16 +27,24 @@ def send_telegram_msg(message):
 
 def verify_roundup(text):
     if not text: return False
-    # Triple-Check: Zoom in on the Split section
     clean_text = re.sub(r'\s+', ' ', text).lower()
     split_match = re.search(r"reverse (stock )?split", clean_text)
     if not split_match: return False
     
-    # Analyze 2,000 characters around the split mention for precision
     context = clean_text[max(0, split_match.start()-500):split_match.start() + 1500]
     
-    pos = [r"rounded up", r"rounding up", r"upwardly adjusted", r"round lot", r"next higher whole"]
-    neg = [r"cash in lieu", r"cash payment", r"will be cancelled", r"rounded down"]
+    # FIXED: Added "round up" (present tense) to catch NDLS
+    pos = [
+        r"round(ed|ing)? up",       # Catches: round up, rounded up, rounding up
+        r"next whole share",        # Catches: "to the next whole share" (NDLS phrasing)
+        r"next higher whole", 
+        r"nearest whole share",
+        r"round lot",
+        r"upwardly adjusted"
+    ]
+    
+    # Negative checks (Cash in Lieu)
+    neg = [r"cash in lieu", r"cash payment", r"rounded down"]
     
     has_pos = any(re.search(p, context) for p in pos)
     has_neg = any(re.search(p, context) for p in neg)
@@ -46,7 +54,7 @@ def verify_roundup(text):
 def run_rsa_sniper():
     seen_filings = load_seen_filings()
     
-    # TRIPLE CHECK: Pull filings for TODAY and YESTERDAY to ensure zero misses
+    # TRIPLE CHECK: Today + Yesterday
     today = datetime.now()
     yesterday = today - timedelta(days=1)
     
@@ -64,20 +72,18 @@ def run_rsa_sniper():
                 continue
             
             try:
-                # Guaranteed Reading: The bot downloads the full text
                 full_text = filing.text()
                 if verify_roundup(full_text):
                     msg = (
                         f"🎯 *RSA GOLD DETECTED*\n"
                         f"Ticker: {filing.ticker}\n"
-                        f"Form: {filing.form}\n"
                         f"Date: {filing.filing_date}\n"
                         f"Link: {filing.url}"
                     )
                     send_telegram_msg(msg)
                     save_seen_filing(filing.accession_number)
             except Exception as e:
-                print(f"Skipping {filing.accession_number}: {e}")
+                pass 
 
 if __name__ == "__main__":
     run_rsa_sniper()
