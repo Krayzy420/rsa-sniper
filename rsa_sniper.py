@@ -32,25 +32,29 @@ def verify_roundup(text, ticker):
     if "reverse" not in clean_text or "split" not in clean_text:
         return False
 
-    print(f"  -> Found 'Reverse Split' in {ticker} text. Checking details...")
+    print(f"[{ticker}] MATCH: Found 'Reverse Split' in text. Analyzing...")
 
-    # 2. Precise Rounding Check (Includes NDLS logic)
-    pos = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
+    # 2. Precise Rounding Check
+    pos = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted", r"no fractional shares"]
     neg = [r"cash in lieu", r"cash payment", r"rounded down"]
     
     has_pos = any(re.search(p, clean_text) for p in pos)
     has_neg = any(re.search(p, clean_text) for p in neg)
     
-    if has_pos: print(f"    -> Positive Match Found!")
-    if has_neg: print(f"    -> Negative Match (Cash) Found.")
-
-    return has_pos and not has_neg
+    if has_neg:
+        print(f"  X [{ticker}] REJECTED: Found 'Cash in Lieu' logic.")
+        return False
+        
+    if has_pos:
+        print(f"  >>> [{ticker}] SUCCESS: Found Rounding Logic! <<<")
+        return True
+    
+    print(f"  X [{ticker}] REJECTED: No specific rounding/cash instructions found.")
+    return False
 
 def run_rsa_sniper():
     seen_filings = load_seen_filings()
     
-    # BRUTE FORCE: Grab the latest 2,000 filings of ANY type.
-    # This bypasses the broken Date filter.
     print("Connecting to SEC to pull latest 2,000 filings...")
     try:
         filings = get_filings().latest(2000)
@@ -59,23 +63,18 @@ def run_rsa_sniper():
         print(f"CRITICAL ERROR: Could not download filings. {e}")
         return
 
-    # Filter for the forms we care about manually
     target_forms = ["8-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
     
     count_checked = 0
     for filing in filings:
-        # Manual Filter
         if filing.form not in target_forms:
             continue
             
-        if filing.accession_number in seen_filings:
-            continue
+        # We temporarily REMOVED the "seen_filings" check so it re-scans NDLS every time for testing
+        # if filing.accession_number in seen_filings: continue
             
         count_checked += 1
-        # Simple progress marker every 50 checks
-        if count_checked % 50 == 0:
-            print(f"Checked {count_checked} target filings...")
-
+        
         try:
             full_text = filing.text()
             if verify_roundup(full_text, filing.ticker):
