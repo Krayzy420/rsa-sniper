@@ -1,11 +1,13 @@
 name: RSA Sniper Bot
 on:
   schedule:
-    - cron: '*/30 * * * *' # This tells it to run every 30 minutes
-  workflow_dispatch: # This adds a "Run Now" button for testing
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v2
       - name: Set up Python
@@ -19,3 +21,10 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python rsa_sniper.py
+      - name: Save Memory
+        run: |
+          git config --global user.name "RSA-Bot"
+          git config --global user.email "bot@github.com"
+          git add seen_filings.txt || true
+          git commit -m "Triple Check - Update memory" || true
+          git push
