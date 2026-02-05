@@ -1,7 +1,6 @@
 import os
 import requests
 import re
-from datetime import datetime, timedelta
 from edgar import *
 
 # Identify to SEC
@@ -29,83 +28,71 @@ def verify_roundup(text, ticker):
     if not text: return False
     clean_text = re.sub(r'\s+', ' ', text).lower()
     
-    # 1. Check for Split Mention
+    # 1. Broad Split Check
     if "reverse" not in clean_text or "split" not in clean_text:
         return False
 
-    print(f"  -> Found 'Reverse Split' in {ticker}. Checking for Rounding...")
+    print(f"  -> Found 'Reverse Split' in {ticker} text. Checking details...")
 
-    # 2. Check for Rounding Logic (ANYWHERE in the text)
-    # Added "round up" (present tense) specifically for NDLS
-    pos_patterns = [
-        r"round(ed|ing)? up", 
-        r"to the next whole", 
-        r"nearest whole share",
-        r"upwardly adjusted",
-        r"no fractional shares(.*?)issued" # Often implies rounding if cash isn't mentioned
-    ]
+    # 2. Precise Rounding Check (Includes NDLS logic)
+    pos = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
+    neg = [r"cash in lieu", r"cash payment", r"rounded down"]
     
-    # 3. Check for Cash Logic (The "Killer")
-    neg_patterns = [
-        r"cash in lieu", 
-        r"cash payment", 
-        r"otherwise be entitled to receive a fractional share(.*?)cash",
-        r"rounded down"
-    ]
+    has_pos = any(re.search(p, clean_text) for p in pos)
+    has_neg = any(re.search(p, clean_text) for p in neg)
     
-    has_pos = any(re.search(p, clean_text) for p in pos_patterns)
-    has_neg = any(re.search(p, clean_text) for p in neg_patterns)
+    if has_pos: print(f"    -> Positive Match Found!")
+    if has_neg: print(f"    -> Negative Match (Cash) Found.")
 
-    if has_pos:
-        print(f"  -> Found ROUNDING logic in {ticker}!")
-    if has_neg:
-        print(f"  -> Found CASH logic in {ticker} (Trade Killed).")
-
-    # ONLY return true if we have Positive and NO Negative
     return has_pos and not has_neg
 
 def run_rsa_sniper():
     seen_filings = load_seen_filings()
     
-    today = datetime.now()
-    yesterday = today - timedelta(days=1)
-    
-    # Checking Today and Yesterday
-    dates_to_check = [today.strftime('%Y-%m-%d'), yesterday.strftime('%Y-%m-%d')]
+    # BRUTE FORCE: Grab the latest 2,000 filings of ANY type.
+    # This bypasses the broken Date filter.
+    print("Connecting to SEC to pull latest 2,000 filings...")
+    try:
+        filings = get_filings().latest(2000)
+        print(f"SUCCESS: Downloaded list of {len(filings)} filings.")
+    except Exception as e:
+        print(f"CRITICAL ERROR: Could not download filings. {e}")
+        return
+
+    # Filter for the forms we care about manually
     target_forms = ["8-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
     
-    for date_str in dates_to_check:
-        print(f"--- TRIPLE CHECK: Scanning ALL filings for {date_str} ---")
-        try:
-            filings = get_filings(form=target_forms, filing_date=date_str)
-        except Exception as e:
-            print(f"Error connecting to SEC: {e}")
+    count_checked = 0
+    for filing in filings:
+        # Manual Filter
+        if filing.form not in target_forms:
             continue
-        
-        if not filings: continue
-
-        for filing in filings:
-            if filing.accession_number in seen_filings:
-                continue
             
-            try:
-                # Basic filter to save time: skip if "split" isn't in the description
-                # But read text just to be safe if it's an 8-K
-                full_text = filing.text()
-                
-                if verify_roundup(full_text, filing.ticker):
-                    msg = (
-                        f"🎯 *RSA GOLD DETECTED*\n"
-                        f"Ticker: {filing.ticker}\n"
-                        f"Date: {filing.filing_date}\n"
-                        f"Link: {filing.url}"
-                    )
-                    send_telegram_msg(msg)
-                    save_seen_filing(filing.accession_number)
-                    print(f"SUCCESS: Alert sent for {filing.ticker}")
-            except Exception as e:
-                # Ignore random read errors
-                pass
+        if filing.accession_number in seen_filings:
+            continue
+            
+        count_checked += 1
+        # Simple progress marker every 50 checks
+        if count_checked % 50 == 0:
+            print(f"Checked {count_checked} target filings...")
+
+        try:
+            full_text = filing.text()
+            if verify_roundup(full_text, filing.ticker):
+                msg = (
+                    f"🎯 *RSA GOLD DETECTED*\n"
+                    f"Ticker: {filing.ticker}\n"
+                    f"Form: {filing.form}\n"
+                    f"Date: {filing.filing_date}\n"
+                    f"Link: {filing.url}"
+                )
+                send_telegram_msg(msg)
+                save_seen_filing(filing.accession_number)
+                print(f"ALARM SENT for {filing.ticker}")
+        except Exception as e:
+            pass
+
+    print(f"Run Complete. Scanned {count_checked} relevant documents.")
 
 if __name__ == "__main__":
     run_rsa_sniper()
