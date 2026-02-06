@@ -15,7 +15,8 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install dependencies
-        run: pip install edgartools requests packaging "hishel<0.1.0"
+        # We added 'yfinance' here so it can get stock prices
+        run: pip install edgartools requests packaging yfinance "hishel<0.1.0"
       - name: Run Sniper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
@@ -26,5 +27,5 @@ jobs:
           git config --global user.name "RSA-Bot"
           git config --global user.email "bot@github.com"
           git add seen_filings.txt || true
-          git commit -m "Triple Check - Update memory" || true
+          git commit -m "Update memory" || true
           git push
