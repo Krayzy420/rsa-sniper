@@ -24,6 +24,13 @@ def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}&parse_mode=Markdown"
     requests.get(url)
 
+# NEW FUNCTION: Safely get the ticker without crashing
+def get_ticker_safe(filing):
+    try:
+        return filing.ticker
+    except:
+        return "UNKNOWN"
+
 def verify_roundup(text, ticker):
     if not text: 
         return False
@@ -36,7 +43,6 @@ def verify_roundup(text, ticker):
         print(f"Snippet: {clean_text[:500]}...")
         print("-----------------------------\n")
 
-    # Relaxed Split Check
     if "reverse" not in clean_text and "split" not in clean_text:
         return False
 
@@ -69,32 +75,39 @@ def run_rsa_sniper():
     for filing in filings:
         if filing.form not in target_forms:
             continue
-            
+        
+        # USE SAFETY SHIELD
+        ticker = get_ticker_safe(filing)
         count_checked += 1
         
         # Progress marker
         if count_checked % 50 == 0:
-            print(f"Scanning... (Currently at {filing.ticker})")
+            print(f"Scanning... (Currently at {ticker})")
 
         try:
             # Force check NDLS
-            if filing.ticker == "NDLS":
+            if ticker == "NDLS":
                 print(f"!!! FOUND NDLS in the list ({filing.form}) !!!")
             
+            if ticker == "UNKNOWN":
+                continue
+
             full_text = filing.text()
             
-            if verify_roundup(full_text, filing.ticker):
+            if verify_roundup(full_text, ticker):
                 msg = (
                     f"🎯 *RSA GOLD DETECTED*\n"
-                    f"Ticker: {filing.ticker}\n"
+                    f"Ticker: {ticker}\n"
                     f"Date: {filing.filing_date}\n"
                     f"Link: {filing.url}"
                 )
                 send_telegram_msg(msg)
                 save_seen_filing(filing.accession_number)
-                print(f">>> ALARM SENT for {filing.ticker} <<<")
+                print(f">>> ALARM SENT for {ticker} <<<")
                 
         except Exception as e:
+            # If a single file fails, just print error and keep moving
+            # print(f"Skipping bad file: {e}")
             pass
 
     print(f"Run Complete. Scanned {count_checked} relevant documents.")
