@@ -24,38 +24,33 @@ def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}&parse_mode=Markdown"
     requests.get(url)
 
-# NEW FUNCTION: Safely get the ticker without crashing
-def get_ticker_safe(filing):
-    try:
-        return filing.ticker
-    except:
-        return "UNKNOWN"
-
-def verify_roundup(text, ticker):
-    if not text: 
-        return False
-        
+def verify_roundup(text, company_name):
+    if not text: return False
     clean_text = re.sub(r'\s+', ' ', text).lower()
     
-    # TRAP: If it's NDLS, print the first 500 characters so we can see what the bot sees
-    if ticker == "NDLS":
+    # TRAP: If name contains "Noodles", print the text to prove we see it
+    if "noodles" in company_name.lower():
         print(f"\n--- [NDLS TRAP TRIGGERED] ---")
-        print(f"Snippet: {clean_text[:500]}...")
+        print(f"Company: {company_name}")
+        # Print a snippet of the text to confirm we are reading it
+        print(f"Text Snippet: {clean_text[:200]}...")
+        
+        # Check logic explicitly for debug
+        pos_check = any(re.search(p, clean_text) for p in [r"round(ed|ing)? up", r"next whole share"])
+        neg_check = any(re.search(p, clean_text) for p in [r"cash in lieu"])
+        print(f"DEBUG: Found Positive? {pos_check} | Found Negative? {neg_check}")
         print("-----------------------------\n")
 
+    # Standard RSA Logic
     if "reverse" not in clean_text and "split" not in clean_text:
         return False
 
-    # Rounding Check
     pos = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
     neg = [r"cash in lieu", r"cash payment", r"rounded down"]
     
     has_pos = any(re.search(p, clean_text) for p in pos)
     has_neg = any(re.search(p, clean_text) for p in neg)
     
-    if ticker == "NDLS":
-        print(f"NDLS DEBUG -> Has Positive: {has_pos} | Has Negative: {has_neg}")
-
     return has_pos and not has_neg
 
 def run_rsa_sniper():
@@ -75,39 +70,34 @@ def run_rsa_sniper():
     for filing in filings:
         if filing.form not in target_forms:
             continue
-        
-        # USE SAFETY SHIELD
-        ticker = get_ticker_safe(filing)
+            
         count_checked += 1
+        company = filing.company # Get the Name, not the Ticker
         
-        # Progress marker
+        # Progress marker (Show Name instead of UNKNOWN)
         if count_checked % 50 == 0:
-            print(f"Scanning... (Currently at {ticker})")
+            print(f"Scanning... (At: {company})")
 
         try:
-            # Force check NDLS
-            if ticker == "NDLS":
-                print(f"!!! FOUND NDLS in the list ({filing.form}) !!!")
-            
-            if ticker == "UNKNOWN":
-                continue
-
             full_text = filing.text()
             
-            if verify_roundup(full_text, ticker):
+            # Use Company Name for identification
+            if verify_roundup(full_text, company):
+                # Try to get ticker, default to "UNKNOWN" if missing
+                ticker = filing.ticker if filing.ticker else "UNKNOWN"
+                
                 msg = (
                     f"🎯 *RSA GOLD DETECTED*\n"
+                    f"Company: {company}\n"
                     f"Ticker: {ticker}\n"
                     f"Date: {filing.filing_date}\n"
                     f"Link: {filing.url}"
                 )
                 send_telegram_msg(msg)
                 save_seen_filing(filing.accession_number)
-                print(f">>> ALARM SENT for {ticker} <<<")
+                print(f">>> ALARM SENT for {company} <<<")
                 
         except Exception as e:
-            # If a single file fails, just print error and keep moving
-            # print(f"Skipping bad file: {e}")
             pass
 
     print(f"Run Complete. Scanned {count_checked} relevant documents.")
