@@ -24,34 +24,20 @@ def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}&parse_mode=Markdown"
     requests.get(url)
 
-def verify_roundup(text, company_name):
-    if not text: return False
+def check_text_for_gold(text):
+    if not text: return False, False
     clean_text = re.sub(r'\s+', ' ', text).lower()
-    
-    # TRAP: If name contains "Noodles", print the text to prove we see it
-    if "noodles" in company_name.lower():
-        print(f"\n--- [NDLS TRAP TRIGGERED] ---")
-        print(f"Company: {company_name}")
-        # Print a snippet of the text to confirm we are reading it
-        print(f"Text Snippet: {clean_text[:200]}...")
-        
-        # Check logic explicitly for debug
-        pos_check = any(re.search(p, clean_text) for p in [r"round(ed|ing)? up", r"next whole share"])
-        neg_check = any(re.search(p, clean_text) for p in [r"cash in lieu"])
-        print(f"DEBUG: Found Positive? {pos_check} | Found Negative? {neg_check}")
-        print("-----------------------------\n")
 
-    # Standard RSA Logic
-    if "reverse" not in clean_text and "split" not in clean_text:
-        return False
+    # 1. Check for Rounding (Positive)
+    # Catches: "round up", "rounded up", "rounding up", "next whole share"
+    pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
+    has_pos = any(re.search(p, clean_text) for p in pos_patterns)
 
-    pos = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
-    neg = [r"cash in lieu", r"cash payment", r"rounded down"]
-    
-    has_pos = any(re.search(p, clean_text) for p in pos)
-    has_neg = any(re.search(p, clean_text) for p in neg)
-    
-    return has_pos and not has_neg
+    # 2. Check for Cash (Negative)
+    neg_patterns = [r"cash in lieu", r"cash payment", r"rounded down"]
+    has_neg = any(re.search(p, clean_text) for p in neg_patterns)
+
+    return has_pos, has_neg
 
 def run_rsa_sniper():
     seen_filings = load_seen_filings()
@@ -72,20 +58,47 @@ def run_rsa_sniper():
             continue
             
         count_checked += 1
-        company = filing.company # Get the Name, not the Ticker
+        company = filing.company
         
-        # Progress marker (Show Name instead of UNKNOWN)
+        # Safe Ticker Access
+        try:
+            ticker = filing.ticker if filing.ticker else "UNKNOWN"
+        except:
+            ticker = "UNKNOWN"
+
         if count_checked % 50 == 0:
             print(f"Scanning... (At: {company})")
 
         try:
-            full_text = filing.text()
+            # PHASE 1: Check Main Document
+            main_text = filing.text()
+            if not main_text: continue
             
-            # Use Company Name for identification
-            if verify_roundup(full_text, company):
-                # Try to get ticker, default to "UNKNOWN" if missing
-                ticker = filing.ticker if filing.ticker else "UNKNOWN"
-                
+            clean_main = re.sub(r'\s+', ' ', main_text).lower()
+            
+            # Optimization: If "Reverse" or "Split" isn't mentioned, skip immediately
+            if "reverse" not in clean_main and "split" not in clean_main:
+                continue
+
+            # Check Main Text Logic
+            has_pos, has_neg = check_text_for_gold(main_text)
+            
+            # PHASE 2: Drill Down into Attachments (Exhibits)
+            # If we found a split but NO result yet, check the attachments
+            if not has_pos and not has_neg:
+                print(f"  -> Found Split in {company}, but no details. Drilling into attachments...")
+                for attachment in filing.attachments:
+                    try:
+                        att_text = attachment.text()
+                        p, n = check_text_for_gold(att_text)
+                        if p: has_pos = True
+                        if n: has_neg = True
+                        if has_pos or has_neg: break # Stop looking if we found something
+                    except:
+                        continue
+
+            # FINAL VERDICT
+            if has_pos and not has_neg:
                 msg = (
                     f"🎯 *RSA GOLD DETECTED*\n"
                     f"Company: {company}\n"
@@ -96,8 +109,13 @@ def run_rsa_sniper():
                 send_telegram_msg(msg)
                 save_seen_filing(filing.accession_number)
                 print(f">>> ALARM SENT for {company} <<<")
-                
+            
+            elif has_neg:
+                # print(f"  X {company}: Rejected (Cash in Lieu)")
+                pass
+
         except Exception as e:
+            # print(f"Error reading {company}: {e}")
             pass
 
     print(f"Run Complete. Scanned {count_checked} relevant documents.")
