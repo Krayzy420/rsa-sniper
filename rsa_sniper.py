@@ -6,24 +6,15 @@ from edgar import *
 # Identify to SEC
 set_identity("Kevin Anderson kevinand83@gmail.com")
 
-DB_FILE = "seen_filings.txt"
+# We are NOT loading the memory file this time.
+# We want to force it to re-alert you on NDLS.
 
-def load_seen_filings():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            return set(line.strip() for line in f)
-    return set()
-
-def save_seen_filing(accession_number):
-    with open(DB_FILE, "a") as f:
-        f.write(f"{accession_number}\n")
-
-# FIXED: Now handles symbols like '&' correctly
 def send_telegram_msg(message):
     token = os.environ.get('TELEGRAM_TOKEN')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    # Sending data as 'params' automatically handles special characters
+    
+    # This method automatically handles the "&" symbol so it doesn't break
     params = {
         "chat_id": chat_id,
         "text": message,
@@ -31,6 +22,7 @@ def send_telegram_msg(message):
     }
     try:
         requests.get(url, params=params)
+        print(f"  -> Telegram request sent for message: {message[:20]}...")
     except Exception as e:
         print(f"Telegram Error: {e}")
 
@@ -49,8 +41,6 @@ def check_text_for_gold(text):
     return has_pos, has_neg
 
 def run_rsa_sniper():
-    seen_filings = load_seen_filings()
-    
     print("Connecting to SEC to pull latest 2,000 filings...")
     try:
         filings = get_filings().latest(2000)
@@ -69,6 +59,8 @@ def run_rsa_sniper():
         count_checked += 1
         company = filing.company
         
+        # MEMORY WIPE: We removed the check here. It will look at everything.
+
         try:
             ticker = filing.ticker if filing.ticker else "UNKNOWN"
         except:
@@ -78,11 +70,6 @@ def run_rsa_sniper():
             print(f"Scanning... (At: {company})")
 
         try:
-            # Check the Memory File FIRST to prevent re-alerting on old stuff
-            # (Remove this 'if' statement only if you want to test NDLS again)
-            if filing.accession_number in seen_filings and ticker != "NDLS":
-                continue
-
             # PHASE 1: Check Main Document
             main_text = filing.text()
             if not main_text: continue
@@ -115,10 +102,9 @@ def run_rsa_sniper():
                     f"Date: {filing.filing_date}\n"
                     f"Link: {filing.url}"
                 )
+                print(f">>> SENDING ALARM for {company} <<<")
                 send_telegram_msg(msg)
-                save_seen_filing(filing.accession_number)
-                print(f">>> ALARM SENT for {company} <<<")
-
+            
         except Exception as e:
             pass
 
