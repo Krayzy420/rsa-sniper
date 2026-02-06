@@ -18,18 +18,27 @@ def save_seen_filing(accession_number):
     with open(DB_FILE, "a") as f:
         f.write(f"{accession_number}\n")
 
+# FIXED: Now handles symbols like '&' correctly
 def send_telegram_msg(message):
     token = os.environ.get('TELEGRAM_TOKEN')
     chat_id = os.environ.get('TELEGRAM_CHAT_ID')
-    url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}&parse_mode=Markdown"
-    requests.get(url)
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # Sending data as 'params' automatically handles special characters
+    params = {
+        "chat_id": chat_id,
+        "text": message,
+        "parse_mode": "Markdown"
+    }
+    try:
+        requests.get(url, params=params)
+    except Exception as e:
+        print(f"Telegram Error: {e}")
 
 def check_text_for_gold(text):
     if not text: return False, False
     clean_text = re.sub(r'\s+', ' ', text).lower()
 
     # 1. Check for Rounding (Positive)
-    # Catches: "round up", "rounded up", "rounding up", "next whole share"
     pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
     has_pos = any(re.search(p, clean_text) for p in pos_patterns)
 
@@ -60,7 +69,6 @@ def run_rsa_sniper():
         count_checked += 1
         company = filing.company
         
-        # Safe Ticker Access
         try:
             ticker = filing.ticker if filing.ticker else "UNKNOWN"
         except:
@@ -70,30 +78,31 @@ def run_rsa_sniper():
             print(f"Scanning... (At: {company})")
 
         try:
+            # Check the Memory File FIRST to prevent re-alerting on old stuff
+            # (Remove this 'if' statement only if you want to test NDLS again)
+            if filing.accession_number in seen_filings and ticker != "NDLS":
+                continue
+
             # PHASE 1: Check Main Document
             main_text = filing.text()
             if not main_text: continue
             
             clean_main = re.sub(r'\s+', ' ', main_text).lower()
-            
-            # Optimization: If "Reverse" or "Split" isn't mentioned, skip immediately
             if "reverse" not in clean_main and "split" not in clean_main:
                 continue
 
-            # Check Main Text Logic
             has_pos, has_neg = check_text_for_gold(main_text)
             
-            # PHASE 2: Drill Down into Attachments (Exhibits)
-            # If we found a split but NO result yet, check the attachments
+            # PHASE 2: Drill Down into Attachments
             if not has_pos and not has_neg:
-                print(f"  -> Found Split in {company}, but no details. Drilling into attachments...")
+                print(f"  -> Found Split in {company}, drilling into attachments...")
                 for attachment in filing.attachments:
                     try:
                         att_text = attachment.text()
                         p, n = check_text_for_gold(att_text)
                         if p: has_pos = True
                         if n: has_neg = True
-                        if has_pos or has_neg: break # Stop looking if we found something
+                        if has_pos or has_neg: break 
                     except:
                         continue
 
@@ -109,13 +118,8 @@ def run_rsa_sniper():
                 send_telegram_msg(msg)
                 save_seen_filing(filing.accession_number)
                 print(f">>> ALARM SENT for {company} <<<")
-            
-            elif has_neg:
-                # print(f"  X {company}: Rejected (Cash in Lieu)")
-                pass
 
         except Exception as e:
-            # print(f"Error reading {company}: {e}")
             pass
 
     print(f"Run Complete. Scanned {count_checked} relevant documents.")
