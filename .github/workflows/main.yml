@@ -1,8 +1,8 @@
 name: RSA Sniper Bot
 on:
   schedule:
-    - cron: '*/5 * * * *' # Auto-runs every 5 minutes
-  workflow_dispatch:      # Manual Button
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
     inputs:
       scan_mode:
         description: 'Scan Depth'
@@ -13,7 +13,7 @@ on:
         - Live (500 files)
         - Deep Scan (10,000 files)
       test_ticker:
-        description: 'TEST TICKER (Optional - Type symbol to force test)'
+        description: 'OPTIONAL: Test Specific Ticker'
         required: false
         default: ''
 
@@ -29,12 +29,11 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install dependencies
-        run: pip install edgartools requests packaging yfinance "hishel<0.1.0"
+        run: pip install edgartools requests packaging yfinance "hishel<0.1.0" python-dateutil
       - name: Run Sniper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Pass both inputs to the script
           SCAN_MODE: ${{ github.event.inputs.scan_mode }}
           TEST_TICKER: ${{ github.event.inputs.test_ticker }}
         run: python rsa_sniper.py
