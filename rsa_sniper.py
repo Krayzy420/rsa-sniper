@@ -20,12 +20,13 @@ IS_DEEP_SCAN = False
 if SCAN_INPUT and "Deep" in SCAN_INPUT:
     IS_DEEP_SCAN = True
 
+# Mode Selection
 if FORCE_TEST_TICKER:
     SCAN_DEPTH = 10000
     print(f"--- MODE: SURGICAL TEST ({FORCE_TEST_TICKER}) ---")
 elif IS_DEEP_SCAN:
-    SCAN_DEPTH = 10000
-    print(f"--- MODE: DEEP HISTORY (Last 30 Days) ---")
+    SCAN_DEPTH = 5000 # Last ~1 week (Safer for memory)
+    print(f"--- MODE: DEEP DRAGNET (Last 5000 Files) ---")
 else:
     SCAN_DEPTH = 500
     print(f"--- MODE: LIVE SENTRY (Last 24 Hours) ---")
@@ -41,6 +42,7 @@ def save_seen_filing(accession_number):
         f.write(f"{accession_number}\n")
 
 def get_stock_data(ticker):
+    if ticker == "UNKNOWN": return 0.0, "N/A", "N/A"
     try:
         stock = yf.Ticker(ticker)
         try: price = stock.fast_info.last_price
@@ -101,6 +103,10 @@ def check_text_for_gold(text):
     if not text: return False, False
     clean_text = re.sub(r'\s+', ' ', text).lower()
     
+    # Must have "Reverse Split" or "Consolidation" to even count
+    if "reverse" not in clean_text and "consolidation" not in clean_text:
+        return False, False
+
     pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
     has_pos = any(re.search(p, clean_text) for p in pos_patterns)
 
@@ -131,46 +137,49 @@ def run_rsa_sniper():
     seen_filings = load_seen_filings()
     count_checked = 0
 
+    # DEBUG: Prove we are reading names
+    print("--- DEBUG: First 3 Companies in Feed ---")
+    for i in range(min(3, len(filings))):
+        print(f"   > {filings[i].company}")
+    print("----------------------------------------")
+
     for filing in filings:
-        # 1. TICKER & NAME REPAIR
+        # 1. IDENTIFY
+        ticker = "UNKNOWN"
         try:
-            ticker = filing.ticker
-            company_lower = str(filing.company).lower()
+            if filing.ticker: ticker = filing.ticker
             
-            # REPAIR MISSING TICKERS
-            if not ticker or ticker == "UNKNOWN":
-                if "noodles" in company_lower: ticker = "NDLS"
-                elif "edible garden" in company_lower: ticker = "EDBL"
-                elif "utime" in company_lower: ticker = "WTO"
-                elif "agape" in company_lower: ticker = "ATPC"
-                elif "sphere 3d" in company_lower: ticker = "ANY"
-                else: ticker = "UNKNOWN"
+            # Manual Repairs (Crucial for 6-Ks)
+            company_lower = str(filing.company).lower()
+            if "noodles" in company_lower: ticker = "NDLS"
+            elif "edible garden" in company_lower: ticker = "EDBL"
+            elif "utime" in company_lower: ticker = "WTO"
+            elif "agape" in company_lower: ticker = "ATPC"
+            elif "sphere 3d" in company_lower: ticker = "ANY"
             
             ticker = str(ticker).upper()
         except:
-            ticker = "UNKNOWN"
+            pass
 
         # 2. FILTERING
-        # A. Test Mode
+        # Test Mode?
         if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER: continue
-        
-        # B. Live Mode (Skip Memory & Unknowns)
+
+        # Live Mode? (Skip seen)
         if not FORCE_TEST_TICKER and not IS_DEEP_SCAN:
-            if ticker == "UNKNOWN": continue
             if filing.accession_number in seen_filings: continue
 
-        # C. Deep Scan (CRITICAL CHANGE: DO NOT SKIP UNKNOWNS if they are Name Matches)
-        # If it's still UNKNOWN after the repair step above, THEN we skip it.
-        # But if we fixed it to "ATPC", we KEEP it.
-        if IS_DEEP_SCAN and ticker == "UNKNOWN": 
-            continue
-
+        # DEEP SCAN: WE DO NOT SKIP "UNKNOWN". WE READ EVERYTHING.
+        
         count_checked += 1
         if count_checked % 100 == 0: print(f"Scanning... Checked {count_checked} docs")
 
         try:
+            # READ TEXT
             main_text = filing.text()
             if not main_text: continue
+            
+            # ANALYZE
             has_pos, has_neg = check_text_for_gold(main_text)
             
             if not has_pos and not has_neg:
@@ -186,7 +195,9 @@ def run_rsa_sniper():
                     except:
                         continue
 
+            # ALERT IF GOLD FOUND
             if has_pos and not has_neg:
+                # Even if ticker is UNKNOWN, we get the data we can
                 price, shares, mcap = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 found_at = datetime.now().strftime("%I:%M %p")
@@ -199,14 +210,20 @@ def run_rsa_sniper():
                     est_value = price * ratio
                     profit = est_value - price
                     status = f"PROFIT: ${profit:.2f}"
+                elif ratio > 0:
+                    header = "⚠️ POTENTIAL RSA"
+                    status = "Check Price Manually"
                 else:
                     header = "⚠️ POTENTIAL RSA"
                     status = "Check Math"
 
                 ratio_display = f"1-for-{ratio}" if ratio > 0 else "Unknown"
 
+                # If ticker is unknown, show the company name instead
+                display_name = ticker if ticker != "UNKNOWN" else f"UNK: {filing.company}"
+
                 msg = (
-                    f"{header}: {ticker}\n"
+                    f"{header}: {display_name}\n"
                     f"-------------------------\n"
                     f"STATUS: {status}\n"
                     f"-------------------------\n"
@@ -218,7 +235,7 @@ def run_rsa_sniper():
                     f"Link: {filing.url}"
                 )
                 
-                print(f">>> SENDING ALERT FOR {ticker} <<<")
+                print(f">>> HIT FOUND: {display_name} <<<")
                 send_telegram_msg(msg)
                 
                 if not IS_DEEP_SCAN and not FORCE_TEST_TICKER:
@@ -227,7 +244,7 @@ def run_rsa_sniper():
         except Exception as e:
             pass
 
-    print(f"Run Complete. Scanned {count_checked} relevant files.")
+    print(f"Run Complete. Scanned {count_checked} files.")
 
 if __name__ == "__main__":
     run_rsa_sniper()
