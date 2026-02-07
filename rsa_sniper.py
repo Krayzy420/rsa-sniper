@@ -9,7 +9,7 @@ from dateutil import parser
 set_identity("Kevin Anderson kevinand83@gmail.com")
 DB_FILE = "seen_filings.txt"
 
-# --- SMART MAPPING (Fixing the ones you just saw) ---
+# --- TARGET MAP (Fixes Missing Tickers) ---
 TARGET_MAP = {
     "agape": "ATPC",
     "utime": "WTO",
@@ -24,26 +24,9 @@ TARGET_MAP = {
     "gree": "GREE"
 }
 
-# --- CONFIGURATION ---
-FORCE_TEST_TICKER = os.environ.get('TEST_TICKER')
-if FORCE_TEST_TICKER:
-    FORCE_TEST_TICKER = FORCE_TEST_TICKER.strip().upper()
-    if FORCE_TEST_TICKER == "": FORCE_TEST_TICKER = None
-
-SCAN_INPUT = os.environ.get('SCAN_MODE')
-IS_DEEP_SCAN = False
-if SCAN_INPUT and "Deep" in SCAN_INPUT:
-    IS_DEEP_SCAN = True
-
-if FORCE_TEST_TICKER:
-    SCAN_DEPTH = 10000
-    print(f"--- MODE: SURGICAL TEST ({FORCE_TEST_TICKER}) ---")
-elif IS_DEEP_SCAN:
-    SCAN_DEPTH = 3000
-    print(f"--- MODE: DEEP HISTORY (Last 3000 Files) ---")
-else:
-    SCAN_DEPTH = 500
-    print(f"--- MODE: LIVE SNIPER (Last 500 Files) ---")
+# --- FORCE LIVE MODE (Max 500 Files) ---
+# We are locking this to 500 to prevent crashing.
+SCAN_DEPTH = 500
 
 def load_seen_filings():
     if os.path.exists(DB_FILE):
@@ -65,17 +48,7 @@ def get_stock_data(ticker):
         if price is None or price == 0:
             price = stock.info.get('previousClose', 0.0)
             
-        try:
-            shares = stock.info.get('sharesOutstanding', 0)
-            mcap = stock.info.get('marketCap', 0)
-        except:
-            shares = 0; mcap = 0
-            
-        if mcap > 1000000: mcap_str = f"${mcap/1000000:.2f}M"
-        else: mcap_str = f"${mcap}"
-        if shares > 1000000: shares_str = f"{shares/1000000:.2f}M"
-        else: shares_str = str(shares)
-        return float(price), shares_str, mcap_str
+        return float(price), "N/A", "N/A"
     except:
         return 0.0, "N/A", "N/A"
 
@@ -85,21 +58,11 @@ def analyze_split_data(text):
     
     # 1. GET RATIO
     no_range_text = re.sub(r'range of 1-for-[0-9]+ to 1-for-[0-9]+', '', clean_text)
-    
-    # Check for "1-for-X"
     match = re.search(r'1-for-([0-9]+)', no_range_text)
     if match: 
         try: ratio = int(match.group(1))
         except: pass
     
-    # Check for "1-to-X" (Common variant)
-    if ratio == 0:
-        match = re.search(r'1-to-([0-9]+)', no_range_text)
-        if match:
-            try: ratio = int(match.group(1))
-            except: pass
-
-    # Check for "X-for-1 Consolidation"
     if ratio == 0:
         match = re.search(r'([0-9]+)-for-1 (share )?consolidation', clean_text)
         if match:
@@ -109,8 +72,6 @@ def analyze_split_data(text):
     # 2. DATE & EXPIRY
     date_str = "Unknown"
     is_expired = False
-    
-    # Look for "Effective Month Day, Year"
     date_match = re.search(r'effective (as of )?([a-z]+ [0-9]{1,2},? [0-9]{4})', clean_text)
     if date_match:
         date_str = date_match.group(2)
@@ -121,19 +82,18 @@ def analyze_split_data(text):
                 is_expired = True
         except:
             pass
-            
     return ratio, date_str, is_expired
 
 def check_gold_status(text):
     if not text: return "NONE"
     clean_text = re.sub(r'\s+', ' ', text).lower()
 
-    # 1. KILLER PHRASES
+    # 1. KILLER PHRASES (Trash)
     bad_patterns = [r"cash (payment )?in lieu", r"paid in cash", r"rounded down"]
     if any(re.search(p, clean_text) for p in bad_patterns):
         return "BAD"
 
-    # 2. GOLD PHRASES
+    # 2. GOLD PHRASES (Round Up)
     good_patterns = [
         r"round(ed|ing)? up",
         r"whole share",
@@ -157,6 +117,7 @@ def send_telegram_msg(message):
         print(f"Telegram Error: {e}")
 
 def run_rsa_sniper():
+    print(f"--- MODE: LIVE SNIPER (Last 500 Files) ---")
     print(f"Connecting to SEC...")
     try:
         filings = get_filings(form=["8-K", "6-K"]).latest(SCAN_DEPTH)
@@ -173,34 +134,29 @@ def run_rsa_sniper():
         ticker = "UNKNOWN"
         try:
             if filing.ticker: ticker = filing.ticker
-            
-            # Map Names to Tickers
+            # Fix Unknowns using Map
             company_lower = str(filing.company).lower()
             for name_key, ticker_val in TARGET_MAP.items():
                 if name_key in company_lower:
                     ticker = ticker_val
                     break
-            
             ticker = str(ticker).upper()
         except:
             pass
 
-        # 2. FILTERING
-        if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER: continue
-        if not FORCE_TEST_TICKER and not IS_DEEP_SCAN:
-            if filing.accession_number in seen_filings: continue
+        # 2. FILTER: SKIP SEEN FILES (Strict Live Mode)
+        if filing.accession_number in seen_filings: continue
 
         count_checked += 1
-        if count_checked % 100 == 0: print(f"Scanning... Checked {count_checked} docs")
+        if count_checked % 50 == 0: print(f"Scanning... Checked {count_checked} docs")
 
         try:
             main_text = filing.text()
             if not main_text: continue
             
-            # --- STRICT FILTERING ---
+            # 3. CHECK STATUS
             status = check_gold_status(main_text)
             
-            # Check attachments if needed
             if status == "NONE":
                 for attachment in filing.attachments:
                     try:
@@ -216,53 +172,35 @@ def run_rsa_sniper():
                     except:
                         continue
             
-            # --- THE "QUALITY CONTROL" GATE ---
+            # 4. ALERT IF GUARANTEED
             if status == "GUARANTEED":
-                # 1. Get Data
-                price, shares, mcap = get_stock_data(ticker)
+                price, _, _ = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 
-                # 2. THE SILENCER: If data is missing, DROP IT.
-                if price == 0 or ratio == 0:
-                    # print(f"Dropping {ticker}: Missing Data (Price: {price}, Ratio: {ratio})") 
-                    continue
-
-                # 3. IF WE SURVIVED, IT'S A VALID ALERT
-                found_at = datetime.now().strftime("%I:%M %p")
-                
-                if is_expired:
-                    header = "⛔ EXPIRED"
-                    calc = "Split Already Happened"
-                else:
-                    header = "🚨 GUARANTEED PROFIT"
+                # Quality Gate: Must have Price & Ratio
+                if price > 0 and ratio > 0 and not is_expired:
                     est_value = price * ratio
                     profit = est_value - price
-                    calc = f"PROFIT: ${profit:.2f} per share"
-
-                ratio_display = f"1-for-{ratio}"
-
-                msg = (
-                    f"{header}: {ticker}\n"
-                    f"-------------------------\n"
-                    f"{calc}\n"
-                    f"-------------------------\n"
-                    f"Price: ${price:.2f}\n"
-                    f"Split: {ratio_display}\n"
-                    f"Effective: {eff_date}\n"
-                    f"-------------------------\n"
-                    f"Link: {filing.url}"
-                )
-                
-                print(f">>> VALID ALERT: {ticker} <<<")
-                send_telegram_msg(msg)
-                
-                if not IS_DEEP_SCAN and not FORCE_TEST_TICKER:
+                    
+                    msg = (
+                        f"🚨 LIVE RSA FOUND: {ticker}\n"
+                        f"-------------------------\n"
+                        f"PROFIT: ${profit:.2f} per share\n"
+                        f"-------------------------\n"
+                        f"Price: ${price:.2f}\n"
+                        f"Split: 1-for-{ratio}\n"
+                        f"Effective: {eff_date}\n"
+                        f"Link: {filing.url}"
+                    )
+                    
+                    print(f">>> SENDING ALERT FOR {ticker} <<<")
+                    send_telegram_msg(msg)
                     save_seen_filing(filing.accession_number)
 
         except Exception as e:
             pass
 
-    print(f"Run Complete. Scanned {count_checked} files.")
+    print(f"Run Complete. Scanned {count_checked} new files.")
 
 if __name__ == "__main__":
     run_rsa_sniper()
