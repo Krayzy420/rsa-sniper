@@ -65,11 +65,9 @@ def check_text_for_gold(text):
     if not text: return False, False
     clean_text = re.sub(r'\s+', ' ', text).lower()
     
-    # 1. POSITIVE (Round Up)
     pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
     has_pos = any(re.search(p, clean_text) for p in pos_patterns)
 
-    # 2. NEGATIVE (Cash)
     neg_patterns = [r"cash in lieu", r"cash payment", r"rounded down"]
     has_neg = any(re.search(p, clean_text) for p in neg_patterns)
 
@@ -78,28 +76,26 @@ def check_text_for_gold(text):
 def run_rsa_sniper():
     print(f"--- STARTING RUN (Test Ticker: {FORCE_TEST_TICKER}) ---")
     
-    # SCANNING 9000 to catch everything
-    scan_depth = 9000 
-    print(f"Connecting to SEC (Scanning last {scan_depth} filings)...")
+    # SMART FILTERING:
+    # Instead of pulling 9000 junk files, we ask for 5000 SPECIFIC forms.
+    # 5000 8-Ks = Approx 25 days of history.
+    target_forms = ["8-K", "6-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
     
+    print(f"Connecting to SEC (Smart Filter: Last 5000 relevant filings)...")
     try:
-        filings = get_filings().latest(scan_depth)
-        print(f"SUCCESS: Downloaded {len(filings)} filings.")
+        # This downloads ONLY the gold, skipping the trash.
+        filings = get_filings(form=target_forms).latest(5000)
+        print(f"SUCCESS: Downloaded {len(filings)} filings (going back ~3 weeks).")
     except Exception as e:
         print(f"CRITICAL SEC ERROR: {e}")
         return
 
-    # ADDED "6-K" HERE TO CATCH FOREIGN STOCKS LIKE WTO AND ATPC
-    target_forms = ["8-K", "6-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
     seen_filings = load_seen_filings()
     count_checked = 0
     
     found_at = datetime.now().strftime("%I:%M %p")
 
     for filing in filings:
-        if filing.form not in target_forms:
-            continue
-            
         count_checked += 1
         
         # Ticker Repair
@@ -109,23 +105,22 @@ def run_rsa_sniper():
             if not ticker and "edible garden" in filing.company.lower(): ticker = "EDBL"
             if not ticker and "utime" in filing.company.lower(): ticker = "WTO"
             if not ticker and "agape" in filing.company.lower(): ticker = "ATPC"
+            if not ticker and "sphere 3d" in filing.company.lower(): ticker = "ANY"
             if not ticker: ticker = "UNKNOWN"
         except:
             ticker = "UNKNOWN"
 
-        # 1. Test Mode Logic
+        # LOGIC GATES
         if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER:
             continue
             
-        # 2. Normal Mode Logic
         if not FORCE_TEST_TICKER and filing.accession_number in seen_filings:
             continue
 
         if count_checked % 200 == 0:
-            print(f"Scanning... ({count_checked} relevant files checked)")
+            print(f"Scanning... ({count_checked}/{len(filings)})")
 
         try:
-            # PHASE 1: Main Text
             main_text = filing.text()
             if not main_text: continue
             
@@ -135,7 +130,6 @@ def run_rsa_sniper():
 
             has_pos, has_neg = check_text_for_gold(main_text)
             
-            # PHASE 2: Attachments (Drill Down)
             if not has_pos and not has_neg:
                 for attachment in filing.attachments:
                     try:
@@ -148,7 +142,6 @@ def run_rsa_sniper():
                         continue
 
             if has_pos and not has_neg:
-                # MATCH FOUND!
                 price, shares, mcap = get_stock_data(ticker)
                 
                 msg = (
