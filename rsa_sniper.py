@@ -9,14 +9,19 @@ from dateutil import parser
 set_identity("Kevin Anderson kevinand83@gmail.com")
 DB_FILE = "seen_filings.txt"
 
-# --- KNOWN TARGETS MAP ---
+# --- SMART MAPPING (Fixing the ones you just saw) ---
 TARGET_MAP = {
     "agape": "ATPC",
     "utime": "WTO",
     "sphere 3d": "ANY",
     "edible garden": "EDBL",
     "noodles": "NDLS",
-    "aspirema": "ASPI"
+    "aspirema": "ASPI",
+    "first foundation": "FFWM",
+    "catheter": "VTAK",
+    "groupon": "GRPN",
+    "muln": "MULN",
+    "gree": "GREE"
 }
 
 # --- CONFIGURATION ---
@@ -80,11 +85,21 @@ def analyze_split_data(text):
     
     # 1. GET RATIO
     no_range_text = re.sub(r'range of 1-for-[0-9]+ to 1-for-[0-9]+', '', clean_text)
+    
+    # Check for "1-for-X"
     match = re.search(r'1-for-([0-9]+)', no_range_text)
     if match: 
         try: ratio = int(match.group(1))
         except: pass
-        
+    
+    # Check for "1-to-X" (Common variant)
+    if ratio == 0:
+        match = re.search(r'1-to-([0-9]+)', no_range_text)
+        if match:
+            try: ratio = int(match.group(1))
+            except: pass
+
+    # Check for "X-for-1 Consolidation"
     if ratio == 0:
         match = re.search(r'([0-9]+)-for-1 (share )?consolidation', clean_text)
         if match:
@@ -94,6 +109,8 @@ def analyze_split_data(text):
     # 2. DATE & EXPIRY
     date_str = "Unknown"
     is_expired = False
+    
+    # Look for "Effective Month Day, Year"
     date_match = re.search(r'effective (as of )?([a-z]+ [0-9]{1,2},? [0-9]{4})', clean_text)
     if date_match:
         date_str = date_match.group(2)
@@ -104,36 +121,25 @@ def analyze_split_data(text):
                 is_expired = True
         except:
             pass
+            
     return ratio, date_str, is_expired
 
 def check_gold_status(text):
-    """
-    BALANCED FILTER:
-    Catches ALL variations of 'Round Up'.
-    Kills ALL variations of 'Cash'.
-    """
     if not text: return "NONE"
     clean_text = re.sub(r'\s+', ' ', text).lower()
 
-    # 1. KILLER PHRASES (If these exist, it's trash)
-    bad_patterns = [
-        r"cash (payment )?in lieu", 
-        r"paid in cash", 
-        r"cash for fractional",
-        r"rounded down"
-    ]
+    # 1. KILLER PHRASES
+    bad_patterns = [r"cash (payment )?in lieu", r"paid in cash", r"rounded down"]
     if any(re.search(p, clean_text) for p in bad_patterns):
         return "BAD"
 
-    # 2. GOLD PHRASES (Expanded List)
+    # 2. GOLD PHRASES
     good_patterns = [
         r"round(ed|ing)? up",
-        r"whole share",               # Catch "receive a whole share"
-        r"upward adjustment",         # Catch "upward adjustment"
-        r"nearest whole number",      # Catch "nearest whole number"
-        r"fractional shares will be issued", # Rare but good
-        r"no fractional shares.*issued", # Often implies rounding if not cash
-        r"rounded to the nearest"     # Often means rounding up for 0.5+
+        r"whole share",
+        r"upward adjustment",
+        r"nearest whole number",
+        r"no fractional shares.*issued"
     ]
     if any(re.search(p, clean_text) for p in good_patterns):
         return "GUARANTEED"
@@ -168,7 +174,7 @@ def run_rsa_sniper():
         try:
             if filing.ticker: ticker = filing.ticker
             
-            # Use the Map
+            # Map Names to Tickers
             company_lower = str(filing.company).lower()
             for name_key, ticker_val in TARGET_MAP.items():
                 if name_key in company_lower:
@@ -191,9 +197,10 @@ def run_rsa_sniper():
             main_text = filing.text()
             if not main_text: continue
             
-            # --- STRICT BUT SMART FILTERING ---
+            # --- STRICT FILTERING ---
             status = check_gold_status(main_text)
             
+            # Check attachments if needed
             if status == "NONE":
                 for attachment in filing.attachments:
                     try:
@@ -209,52 +216,44 @@ def run_rsa_sniper():
                     except:
                         continue
             
-            # --- ALERT ---
+            # --- THE "QUALITY CONTROL" GATE ---
             if status == "GUARANTEED":
+                # 1. Get Data
                 price, shares, mcap = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
+                
+                # 2. THE SILENCER: If data is missing, DROP IT.
+                if price == 0 or ratio == 0:
+                    # print(f"Dropping {ticker}: Missing Data (Price: {price}, Ratio: {ratio})") 
+                    continue
+
+                # 3. IF WE SURVIVED, IT'S A VALID ALERT
                 found_at = datetime.now().strftime("%I:%M %p")
                 
-                # STATUS LOGIC
                 if is_expired:
                     header = "⛔ EXPIRED"
                     calc = "Split Already Happened"
-                elif ratio > 0 and price > 0:
-                    header = "🚨 GUARANTEED ROUND UP"
+                else:
+                    header = "🚨 GUARANTEED PROFIT"
                     est_value = price * ratio
                     profit = est_value - price
                     calc = f"PROFIT: ${profit:.2f} per share"
-                else:
-                    header = "⚠️ ROUND UP FOUND"
-                    calc = "Check Price/Ratio Manually"
 
-                ratio_display = f"1-for-{ratio}" if ratio > 0 else "Unknown"
-                
-                # LINK FOR UNKNOWNS
-                display_name = ticker
-                if ticker == "UNKNOWN":
-                    display_name = f"UNK: {filing.company}"
-                
-                if price == 0 or ticker == "UNKNOWN":
-                    search_query = f"{filing.company} stock price"
-                    search_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
-                    price_line = f"Price: UNKNOWN ([Click to Search]({search_url}))"
-                else:
-                    price_line = f"Price: ${price:.2f}"
+                ratio_display = f"1-for-{ratio}"
 
                 msg = (
-                    f"{header}: {display_name}\n"
+                    f"{header}: {ticker}\n"
                     f"-------------------------\n"
-                    f"STATUS: {calc}\n"
+                    f"{calc}\n"
                     f"-------------------------\n"
-                    f"{price_line}\n"
+                    f"Price: ${price:.2f}\n"
                     f"Split: {ratio_display}\n"
                     f"Effective: {eff_date}\n"
                     f"-------------------------\n"
                     f"Link: {filing.url}"
                 )
                 
-                print(f">>> GOLD FOUND: {display_name} <<<")
+                print(f">>> VALID ALERT: {ticker} <<<")
                 send_telegram_msg(msg)
                 
                 if not IS_DEEP_SCAN and not FORCE_TEST_TICKER:
