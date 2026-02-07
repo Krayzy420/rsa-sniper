@@ -1,62 +1,54 @@
 import os
 import requests
-import re
 import yfinance as yf
 from datetime import datetime
-from edgar import *
 
-set_identity("Kevin Anderson kevinand83@gmail.com")
-
-DB_FILE = "seen_filings.txt"
-
-# --- INPUT HANDLING ---
-# 1. Did user type a specific ticker?
-FORCE_TEST_TICKER = os.environ.get('TEST_TICKER')
-if FORCE_TEST_TICKER == "": 
-    FORCE_TEST_TICKER = None
-
-# 2. Did user select Deep Scan?
-SCAN_INPUT = os.environ.get('SCAN_MODE')
-IS_DEEP_SCAN = False
-if SCAN_INPUT and "Deep" in SCAN_INPUT:
-    IS_DEEP_SCAN = True
-
-def load_seen_filings():
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "r") as f:
-            return set(line.strip() for line in f)
-    return set()
-
-def save_seen_filing(accession_number):
-    with open(DB_FILE, "a") as f:
-        f.write(f"{accession_number}\n")
+# --- CONFIGURATION ---
+# We are FORCING this to "NDLS" so you see a result immediately.
+# After you get the text, change this to: TEST_TICKER = None
+TEST_TICKER = "NDLS"
+# ---------------------
 
 def get_stock_data(ticker):
-    if ticker == "UNKNOWN": return "N/A", "N/A", "N/A"
+    print(f"Fetching data for {ticker}...")
     try:
         stock = yf.Ticker(ticker)
-        info = stock.fast_info
-        price = info.last_price
-        if not price: 
-            price = stock.info.get('currentPrice', 0.0)
-            if not price: price = stock.info.get('previousClose', 0.0)
         
+        # Try Fast Info (Real-time)
         try:
-            full_info = stock.info
-            shares = full_info.get('sharesOutstanding', 0)
-            mcap = full_info.get('marketCap', 0)
+            price = stock.fast_info.last_price
         except:
-            shares = 0; mcap = 0
-        
-        if mcap and mcap > 1000000: mcap_str = f"${mcap/1000000:.2f}M"
-        else: mcap_str = f"${mcap}"
+            price = stock.info.get('currentPrice')
             
-        if shares and shares > 1000000: shares_str = f"{shares/1000000:.2f}M"
-        else: shares_str = str(shares)
-
-        return f"{price:.2f}", shares_str, mcap_str
-    except:
-        return "N/A", "N/A", "N/A"
+        # Try Share Data
+        try:
+            shares = stock.info.get('sharesOutstanding', 0)
+            mcap = stock.info.get('marketCap', 0)
+        except:
+            shares = 0
+            mcap = 0
+            
+        # Formatting
+        if price:
+            price_str = f"${price:.2f}"
+        else:
+            price_str = "N/A"
+            
+        if mcap and mcap > 1000000:
+            mcap_str = f"${mcap/1000000:.2f}M"
+        else:
+            mcap_str = f"${mcap}"
+            
+        if shares and shares > 1000000:
+            shares_str = f"{shares/1000000:.2f}M"
+        else:
+            shares_str = str(shares)
+            
+        return price_str, shares_str, mcap_str
+        
+    except Exception as e:
+        print(f"Finance Error: {e}")
+        return "Error", "Error", "Error"
 
 def send_telegram_msg(message):
     token = os.environ.get('TELEGRAM_TOKEN')
@@ -64,135 +56,35 @@ def send_telegram_msg(message):
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     params = {"chat_id": chat_id, "text": message}
     try:
+        print(f"Sending Message to Telegram...")
         requests.get(url, params=params)
+        print("Message SENT.")
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"Telegram Failed: {e}")
 
-def check_text_for_gold(text):
-    if not text: return False, False
-    clean_text = re.sub(r'\s+', ' ', text).lower()
+def run_test():
+    print(f"--- RUNNING DIRECT TEST ON {TEST_TICKER} ---")
     
-    pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
-    has_pos = any(re.search(p, clean_text) for p in pos_patterns)
-
-    neg_patterns = [r"cash in lieu", r"cash payment", r"rounded down"]
-    has_neg = any(re.search(p, clean_text) for p in neg_patterns)
-
-    return has_pos, has_neg
-
-def run_rsa_sniper():
-    # --- INTELLIGENT MODE SELECTION ---
-    if FORCE_TEST_TICKER:
-        # TEST MODE: User typed a ticker. We scan deep (10,000) but ONLY for that ticker.
-        # This is fast because we skip reading 9,999 files.
-        scan_depth = 10000
-        print(f"--- MODE: SURGICAL STRIKE for {FORCE_TEST_TICKER} (Scanning last {scan_depth} files) ---")
+    # 1. Get Data
+    price, shares, mcap = get_stock_data(TEST_TICKER)
+    print(f"Data Found: Price={price}, Float={shares}, Cap={mcap}")
     
-    elif IS_DEEP_SCAN:
-        # DEEP MODE: User selected Deep Scan. We scan 10,000 files for EVERYTHING.
-        # This is slow (20 mins).
-        scan_depth = 10000
-        print(f"--- MODE: DEEP HISTORY SCAN (Last {scan_depth} files - ~30 Days) ---")
-        print("NOTE: This run will take time. Do not cancel it.")
-    
-    else:
-        # LIVE MODE: Default auto-run. We scan 500 files.
-        # This is the 5-minute guard duty.
-        scan_depth = 500
-        print(f"--- MODE: LIVE SNIPER (Last {scan_depth} files - ~24 Hours) ---")
-
-    print(f"Connecting to SEC...")
-    try:
-        filings = get_filings(form=["8-K", "6-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]).latest(scan_depth)
-        print(f"SUCCESS: Downloaded list of {len(filings)} documents.")
-    except Exception as e:
-        print(f"CRITICAL SEC ERROR: {e}")
-        return
-
-    seen_filings = load_seen_filings()
-    count_checked = 0
+    # 2. Build Message
     found_at = datetime.now().strftime("%I:%M %p")
-
-    for filing in filings:
-        # TICKER REPAIR
-        try:
-            ticker = filing.ticker
-            company_lower = filing.company.lower()
-            if not ticker:
-                if "noodles" in company_lower: ticker = "NDLS"
-                elif "edible garden" in company_lower: ticker = "EDBL"
-                elif "utime" in company_lower: ticker = "WTO"
-                elif "agape" in company_lower: ticker = "ATPC"
-                elif "sphere 3d" in company_lower: ticker = "ANY"
-                else: ticker = "UNKNOWN"
-        except:
-            ticker = "UNKNOWN"
-
-        # LOGIC GATES
-        # 1. If Testing: Skip anything that isn't the test ticker
-        if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER:
-            continue
-            
-        # 2. If Not Testing: Skip Unknowns and Memory
-        if not FORCE_TEST_TICKER:
-            if ticker == "UNKNOWN": continue
-            # In Deep Scan, we might want to re-see old stuff, but usually we skip memory
-            # If you want Deep Scan to show EVERYTHING (even old alerts), comment out the next two lines
-            if filing.accession_number in seen_filings:
-                continue
-
-        count_checked += 1
-        if count_checked % 50 == 0:
-            print(f"Scanning... ({count_checked} relevant docs checked)")
-
-        try:
-            main_text = filing.text()
-            if not main_text: continue
-            
-            clean_main = re.sub(r'\s+', ' ', main_text).lower()
-            if "reverse" not in clean_main and "split" not in clean_main:
-                continue
-
-            has_pos, has_neg = check_text_for_gold(main_text)
-            
-            if not has_pos and not has_neg:
-                for attachment in filing.attachments:
-                    try:
-                        att_text = attachment.text()
-                        p, n = check_text_for_gold(att_text)
-                        if p: has_pos = True
-                        if n: has_neg = True
-                        if has_pos or has_neg: break 
-                    except:
-                        continue
-
-            if has_pos and not has_neg:
-                price, shares, mcap = get_stock_data(ticker)
-                
-                msg = (
-                    f"RSA GOLD DETECTED\n"
-                    f"------------------\n"
-                    f"Ticker: {ticker}\n"
-                    f"Price: ${price}\n"
-                    f"Float/OS: {shares}\n"
-                    f"Market Cap: {mcap}\n"
-                    f"------------------\n"
-                    f"Filing Date: {filing.filing_date}\n"
-                    f"Popped At: {found_at} ET\n"
-                    f"Link: {filing.url}"
-                )
-                
-                print(f">>> ALARM TRIGGERED for {ticker} <<<")
-                send_telegram_msg(msg)
-                
-                # Update memory unless we are forcing a test
-                if not FORCE_TEST_TICKER:
-                    save_seen_filing(filing.accession_number)
-
-        except Exception as e:
-            pass
-
-    print(f"Run Complete. Scanned {count_checked} relevant documents.")
+    msg = (
+        f"⚠️ SYSTEM TEST ⚠️\n"
+        f"------------------\n"
+        f"Ticker: {TEST_TICKER}\n"
+        f"Price: {price}\n"
+        f"Float: {shares}\n"
+        f"Mkt Cap: {mcap}\n"
+        f"------------------\n"
+        f"Time: {found_at} ET\n"
+        f"Status: FINANCE TOOL IS WORKING"
+    )
+    
+    # 3. Send
+    send_telegram_msg(msg)
 
 if __name__ == "__main__":
-    run_rsa_sniper()
+    run_test()
