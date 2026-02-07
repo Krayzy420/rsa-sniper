@@ -9,7 +9,7 @@ from dateutil import parser
 set_identity("Kevin Anderson kevinand83@gmail.com")
 DB_FILE = "seen_filings.txt"
 
-# --- AUTOMATIC CONFIGURATION ---
+# --- CONFIGURATION ---
 FORCE_TEST_TICKER = os.environ.get('TEST_TICKER')
 if FORCE_TEST_TICKER:
     FORCE_TEST_TICKER = FORCE_TEST_TICKER.strip().upper()
@@ -20,16 +20,15 @@ IS_DEEP_SCAN = False
 if SCAN_INPUT and "Deep" in SCAN_INPUT:
     IS_DEEP_SCAN = True
 
-# Auto-Determine Depth
 if FORCE_TEST_TICKER:
     SCAN_DEPTH = 10000
-    print(f"--- MODE: SURGICAL TEST (Targeting {FORCE_TEST_TICKER}) ---")
+    print(f"--- MODE: SURGICAL TEST ({FORCE_TEST_TICKER}) ---")
 elif IS_DEEP_SCAN:
     SCAN_DEPTH = 10000
-    print(f"--- MODE: DEEP HISTORY SCAN (Last 30 Days - Automatic) ---")
+    print(f"--- MODE: DEEP HISTORY (Last 30 Days) ---")
 else:
     SCAN_DEPTH = 500
-    print(f"--- MODE: LIVE SENTRY (Last 24 Hours - Automatic) ---")
+    print(f"--- MODE: LIVE SENTRY (Last 24 Hours) ---")
 
 def load_seen_filings():
     if os.path.exists(DB_FILE):
@@ -58,10 +57,8 @@ def get_stock_data(ticker):
             
         if mcap > 1000000: mcap_str = f"${mcap/1000000:.2f}M"
         else: mcap_str = f"${mcap}"
-        
         if shares > 1000000: shares_str = f"{shares/1000000:.2f}M"
         else: shares_str = str(shares)
-
         return float(price), shares_str, mcap_str
     except:
         return 0.0, "N/A", "N/A"
@@ -70,7 +67,7 @@ def analyze_split_data(text):
     clean_text = re.sub(r'\s+', ' ', text).lower()
     ratio = 0
     
-    # 1. GET RATIO (Ignore "range of")
+    # 1. GET RATIO
     no_range_text = re.sub(r'range of 1-for-[0-9]+ to 1-for-[0-9]+', '', clean_text)
     match = re.search(r'1-for-([0-9]+)', no_range_text)
     if match: 
@@ -83,10 +80,9 @@ def analyze_split_data(text):
             try: ratio = int(match.group(1))
             except: pass
 
-    # 2. GET DATE & CHECK EXPIRY
+    # 2. DATE & EXPIRY
     date_str = "Unknown"
     is_expired = False
-    
     date_match = re.search(r'effective (as of )?([a-z]+ [0-9]{1,2},? [0-9]{4})', clean_text)
     if date_match:
         date_str = date_match.group(2)
@@ -94,12 +90,11 @@ def analyze_split_data(text):
             eff_date_obj = parser.parse(date_str)
             now = datetime.now()
             if eff_date_obj < now:
-                is_expired = True # Date is past
+                is_expired = True
             else:
-                is_expired = False # Date is future
+                is_expired = False
         except:
             pass
-            
     return ratio, date_str, is_expired
 
 def check_text_for_gold(text):
@@ -137,28 +132,38 @@ def run_rsa_sniper():
     count_checked = 0
 
     for filing in filings:
+        # 1. TICKER & NAME REPAIR
         try:
             ticker = filing.ticker
             company_lower = str(filing.company).lower()
-            if not ticker:
+            
+            # REPAIR MISSING TICKERS
+            if not ticker or ticker == "UNKNOWN":
                 if "noodles" in company_lower: ticker = "NDLS"
                 elif "edible garden" in company_lower: ticker = "EDBL"
                 elif "utime" in company_lower: ticker = "WTO"
                 elif "agape" in company_lower: ticker = "ATPC"
                 elif "sphere 3d" in company_lower: ticker = "ANY"
                 else: ticker = "UNKNOWN"
+            
             ticker = str(ticker).upper()
         except:
             ticker = "UNKNOWN"
 
-        # FILTERING
+        # 2. FILTERING
+        # A. Test Mode
         if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER: continue
         
+        # B. Live Mode (Skip Memory & Unknowns)
         if not FORCE_TEST_TICKER and not IS_DEEP_SCAN:
             if ticker == "UNKNOWN": continue
             if filing.accession_number in seen_filings: continue
-            
-        if IS_DEEP_SCAN and ticker == "UNKNOWN": continue
+
+        # C. Deep Scan (CRITICAL CHANGE: DO NOT SKIP UNKNOWNS if they are Name Matches)
+        # If it's still UNKNOWN after the repair step above, THEN we skip it.
+        # But if we fixed it to "ATPC", we KEEP it.
+        if IS_DEEP_SCAN and ticker == "UNKNOWN": 
+            continue
 
         count_checked += 1
         if count_checked % 100 == 0: print(f"Scanning... Checked {count_checked} docs")
@@ -186,15 +191,14 @@ def run_rsa_sniper():
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 found_at = datetime.now().strftime("%I:%M %p")
                 
-                # PROFIT LOGIC
                 if is_expired:
-                    header = "⛔ EXPIRED / DONE"
-                    status = "SPLIT ALREADY HAPPENED"
+                    header = "⛔ EXPIRED"
+                    status = "SPLIT DONE"
                 elif ratio > 0 and price > 0:
                     header = "🚨 RSA OPPORTUNITY"
                     est_value = price * ratio
                     profit = est_value - price
-                    status = f"PROFIT: ${profit:.2f} per share"
+                    status = f"PROFIT: ${profit:.2f}"
                 else:
                     header = "⚠️ POTENTIAL RSA"
                     status = "Check Math"
