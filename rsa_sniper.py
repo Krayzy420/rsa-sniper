@@ -9,6 +9,16 @@ from dateutil import parser
 set_identity("Kevin Anderson kevinand83@gmail.com")
 DB_FILE = "seen_filings.txt"
 
+# --- KNOWN TARGETS MAP ---
+TARGET_MAP = {
+    "agape": "ATPC",
+    "utime": "WTO",
+    "sphere 3d": "ANY",
+    "edible garden": "EDBL",
+    "noodles": "NDLS",
+    "aspirema": "ASPI"
+}
+
 # --- CONFIGURATION ---
 FORCE_TEST_TICKER = os.environ.get('TEST_TICKER')
 if FORCE_TEST_TICKER:
@@ -20,16 +30,15 @@ IS_DEEP_SCAN = False
 if SCAN_INPUT and "Deep" in SCAN_INPUT:
     IS_DEEP_SCAN = True
 
-# Mode Selection
 if FORCE_TEST_TICKER:
     SCAN_DEPTH = 10000
     print(f"--- MODE: SURGICAL TEST ({FORCE_TEST_TICKER}) ---")
 elif IS_DEEP_SCAN:
-    SCAN_DEPTH = 5000 # Last ~1 week (Safer for memory)
-    print(f"--- MODE: DEEP DRAGNET (Last 5000 Files) ---")
+    SCAN_DEPTH = 3000
+    print(f"--- MODE: DEEP HISTORY (Last 3000 Files) ---")
 else:
     SCAN_DEPTH = 500
-    print(f"--- MODE: LIVE SENTRY (Last 24 Hours) ---")
+    print(f"--- MODE: LIVE SNIPER (Last 500 Files) ---")
 
 def load_seen_filings():
     if os.path.exists(DB_FILE):
@@ -93,27 +102,43 @@ def analyze_split_data(text):
             now = datetime.now()
             if eff_date_obj < now:
                 is_expired = True
-            else:
-                is_expired = False
         except:
             pass
     return ratio, date_str, is_expired
 
-def check_text_for_gold(text):
-    if not text: return False, False
+def check_gold_status(text):
+    """
+    BALANCED FILTER:
+    Catches ALL variations of 'Round Up'.
+    Kills ALL variations of 'Cash'.
+    """
+    if not text: return "NONE"
     clean_text = re.sub(r'\s+', ' ', text).lower()
-    
-    # Must have "Reverse Split" or "Consolidation" to even count
-    if "reverse" not in clean_text and "consolidation" not in clean_text:
-        return False, False
 
-    pos_patterns = [r"round(ed|ing)? up", r"next whole share", r"nearest whole share", r"upwardly adjusted"]
-    has_pos = any(re.search(p, clean_text) for p in pos_patterns)
+    # 1. KILLER PHRASES (If these exist, it's trash)
+    bad_patterns = [
+        r"cash (payment )?in lieu", 
+        r"paid in cash", 
+        r"cash for fractional",
+        r"rounded down"
+    ]
+    if any(re.search(p, clean_text) for p in bad_patterns):
+        return "BAD"
 
-    neg_patterns = [r"cash in lieu", r"cash payment", r"rounded down"]
-    has_neg = any(re.search(p, clean_text) for p in neg_patterns)
+    # 2. GOLD PHRASES (Expanded List)
+    good_patterns = [
+        r"round(ed|ing)? up",
+        r"whole share",               # Catch "receive a whole share"
+        r"upward adjustment",         # Catch "upward adjustment"
+        r"nearest whole number",      # Catch "nearest whole number"
+        r"fractional shares will be issued", # Rare but good
+        r"no fractional shares.*issued", # Often implies rounding if not cash
+        r"rounded to the nearest"     # Often means rounding up for 0.5+
+    ]
+    if any(re.search(p, clean_text) for p in good_patterns):
+        return "GUARANTEED"
 
-    return has_pos, has_neg
+    return "NONE"
 
 def send_telegram_msg(message):
     token = os.environ.get('TELEGRAM_TOKEN')
@@ -137,105 +162,99 @@ def run_rsa_sniper():
     seen_filings = load_seen_filings()
     count_checked = 0
 
-    # DEBUG: Prove we are reading names
-    print("--- DEBUG: First 3 Companies in Feed ---")
-    for i in range(min(3, len(filings))):
-        print(f"   > {filings[i].company}")
-    print("----------------------------------------")
-
     for filing in filings:
-        # 1. IDENTIFY
+        # 1. IDENTIFY TICKER
         ticker = "UNKNOWN"
         try:
             if filing.ticker: ticker = filing.ticker
             
-            # Manual Repairs (Crucial for 6-Ks)
+            # Use the Map
             company_lower = str(filing.company).lower()
-            if "noodles" in company_lower: ticker = "NDLS"
-            elif "edible garden" in company_lower: ticker = "EDBL"
-            elif "utime" in company_lower: ticker = "WTO"
-            elif "agape" in company_lower: ticker = "ATPC"
-            elif "sphere 3d" in company_lower: ticker = "ANY"
+            for name_key, ticker_val in TARGET_MAP.items():
+                if name_key in company_lower:
+                    ticker = ticker_val
+                    break
             
             ticker = str(ticker).upper()
         except:
             pass
 
         # 2. FILTERING
-        # Test Mode?
         if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER: continue
-
-        # Live Mode? (Skip seen)
         if not FORCE_TEST_TICKER and not IS_DEEP_SCAN:
             if filing.accession_number in seen_filings: continue
 
-        # DEEP SCAN: WE DO NOT SKIP "UNKNOWN". WE READ EVERYTHING.
-        
         count_checked += 1
         if count_checked % 100 == 0: print(f"Scanning... Checked {count_checked} docs")
 
         try:
-            # READ TEXT
             main_text = filing.text()
             if not main_text: continue
             
-            # ANALYZE
-            has_pos, has_neg = check_text_for_gold(main_text)
+            # --- STRICT BUT SMART FILTERING ---
+            status = check_gold_status(main_text)
             
-            if not has_pos and not has_neg:
+            if status == "NONE":
                 for attachment in filing.attachments:
                     try:
                         att_text = attachment.text()
-                        p, n = check_text_for_gold(att_text)
-                        if p: 
-                            has_pos = True
-                            main_text = att_text 
-                        if n: has_neg = True
-                        if has_pos or has_neg: break 
+                        att_status = check_gold_status(att_text)
+                        if att_status == "GUARANTEED": 
+                            status = "GUARANTEED"
+                            main_text = att_text
+                            break
+                        if att_status == "BAD":
+                            status = "BAD"
+                            break
                     except:
                         continue
-
-            # ALERT IF GOLD FOUND
-            if has_pos and not has_neg:
-                # Even if ticker is UNKNOWN, we get the data we can
+            
+            # --- ALERT ---
+            if status == "GUARANTEED":
                 price, shares, mcap = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 found_at = datetime.now().strftime("%I:%M %p")
                 
+                # STATUS LOGIC
                 if is_expired:
                     header = "⛔ EXPIRED"
-                    status = "SPLIT DONE"
+                    calc = "Split Already Happened"
                 elif ratio > 0 and price > 0:
-                    header = "🚨 RSA OPPORTUNITY"
+                    header = "🚨 GUARANTEED ROUND UP"
                     est_value = price * ratio
                     profit = est_value - price
-                    status = f"PROFIT: ${profit:.2f}"
-                elif ratio > 0:
-                    header = "⚠️ POTENTIAL RSA"
-                    status = "Check Price Manually"
+                    calc = f"PROFIT: ${profit:.2f} per share"
                 else:
-                    header = "⚠️ POTENTIAL RSA"
-                    status = "Check Math"
+                    header = "⚠️ ROUND UP FOUND"
+                    calc = "Check Price/Ratio Manually"
 
                 ratio_display = f"1-for-{ratio}" if ratio > 0 else "Unknown"
-
-                # If ticker is unknown, show the company name instead
-                display_name = ticker if ticker != "UNKNOWN" else f"UNK: {filing.company}"
+                
+                # LINK FOR UNKNOWNS
+                display_name = ticker
+                if ticker == "UNKNOWN":
+                    display_name = f"UNK: {filing.company}"
+                
+                if price == 0 or ticker == "UNKNOWN":
+                    search_query = f"{filing.company} stock price"
+                    search_url = f"https://www.google.com/search?q={search_query.replace(' ', '+')}"
+                    price_line = f"Price: UNKNOWN ([Click to Search]({search_url}))"
+                else:
+                    price_line = f"Price: ${price:.2f}"
 
                 msg = (
                     f"{header}: {display_name}\n"
                     f"-------------------------\n"
-                    f"STATUS: {status}\n"
+                    f"STATUS: {calc}\n"
                     f"-------------------------\n"
-                    f"Price: ${price:.2f}\n"
+                    f"{price_line}\n"
                     f"Split: {ratio_display}\n"
                     f"Effective: {eff_date}\n"
                     f"-------------------------\n"
-                    f"Found: {found_at} ET\n"
                     f"Link: {filing.url}"
                 )
                 
-                print(f">>> HIT FOUND: {display_name} <<<")
+                print(f">>> GOLD FOUND: {display_name} <<<")
                 send_telegram_msg(msg)
                 
                 if not IS_DEEP_SCAN and not FORCE_TEST_TICKER:
