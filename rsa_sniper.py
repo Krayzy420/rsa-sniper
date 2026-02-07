@@ -10,8 +10,6 @@ set_identity("Kevin Anderson kevinand83@gmail.com")
 DB_FILE = "seen_filings.txt"
 
 # READ THE TEST BUTTON INPUT
-# If you typed "NDLS" in the box, this variable will be "NDLS".
-# If you left it blank, it will be None.
 FORCE_TEST_TICKER = os.environ.get('TEST_TICKER')
 if FORCE_TEST_TICKER == "": 
     FORCE_TEST_TICKER = None
@@ -80,7 +78,7 @@ def check_text_for_gold(text):
 def run_rsa_sniper():
     print(f"--- STARTING RUN (Test Ticker: {FORCE_TEST_TICKER}) ---")
     
-    # MAX SAFE POWER: 9000 filings covers almost a full week of data
+    # SCANNING 9000 to catch everything
     scan_depth = 9000 
     print(f"Connecting to SEC (Scanning last {scan_depth} filings)...")
     
@@ -91,7 +89,8 @@ def run_rsa_sniper():
         print(f"CRITICAL SEC ERROR: {e}")
         return
 
-    target_forms = ["8-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
+    # ADDED "6-K" HERE TO CATCH FOREIGN STOCKS LIKE WTO AND ATPC
+    target_forms = ["8-K", "6-K", "DEF 14A", "PRE 14A", "14C", "DEF 14C"]
     seen_filings = load_seen_filings()
     count_checked = 0
     
@@ -103,25 +102,25 @@ def run_rsa_sniper():
             
         count_checked += 1
         
-        # Ticker Repair (Crucial for EDBL/NDLS)
+        # Ticker Repair
         try:
             ticker = filing.ticker
             if not ticker and "noodles" in filing.company.lower(): ticker = "NDLS"
             if not ticker and "edible garden" in filing.company.lower(): ticker = "EDBL"
+            if not ticker and "utime" in filing.company.lower(): ticker = "WTO"
+            if not ticker and "agape" in filing.company.lower(): ticker = "ATPC"
             if not ticker: ticker = "UNKNOWN"
         except:
             ticker = "UNKNOWN"
 
-        # LOGIC GATES
-        # 1. Test Mode: Skip everything except the test ticker
+        # 1. Test Mode Logic
         if FORCE_TEST_TICKER and ticker != FORCE_TEST_TICKER:
             continue
             
-        # 2. Normal Mode: Skip what we have seen
+        # 2. Normal Mode Logic
         if not FORCE_TEST_TICKER and filing.accession_number in seen_filings:
             continue
 
-        # Progress marker every 200 checks
         if count_checked % 200 == 0:
             print(f"Scanning... ({count_checked} relevant files checked)")
 
@@ -168,7 +167,6 @@ def run_rsa_sniper():
                 print(f">>> ALARM TRIGGERED for {ticker} <<<")
                 send_telegram_msg(msg)
                 
-                # Only save to memory if this is NOT a test run
                 if not FORCE_TEST_TICKER:
                     save_seen_filing(filing.accession_number)
 
