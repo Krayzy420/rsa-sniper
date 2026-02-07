@@ -3,6 +3,11 @@ on:
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
+    inputs:
+      test_ticker:
+        description: 'Ticker to FORCE TEST (Leave empty for normal mode)'
+        required: false
+        default: ''
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -15,12 +20,12 @@ jobs:
         with:
           python-version: '3.9'
       - name: Install dependencies
-        # We added 'yfinance' here so it can get stock prices
         run: pip install edgartools requests packaging yfinance "hishel<0.1.0"
       - name: Run Sniper
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TEST_TICKER: ${{ github.event.inputs.test_ticker }}
         run: python rsa_sniper.py
       - name: Save Memory
         run: |
