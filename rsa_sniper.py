@@ -73,6 +73,7 @@ def analyze_split_data(text):
         try:
             eff_date_obj = parser.parse(date_str)
             now = datetime.now()
+            # If date is in the past, IT IS EXPIRED.
             if eff_date_obj < now:
                 is_expired = True
         except:
@@ -83,12 +84,10 @@ def check_gold_status(text):
     if not text: return "NONE"
     clean_text = re.sub(r'\s+', ' ', text).lower()
 
-    # KILLER PHRASES
     bad_patterns = [r"cash (payment )?in lieu", r"paid in cash", r"rounded down"]
     if any(re.search(p, clean_text) for p in bad_patterns):
         return "BAD"
 
-    # GOLD PHRASES
     good_patterns = [
         r"round(ed|ing)? up",
         r"whole share",
@@ -117,6 +116,7 @@ def run_rsa_sniper():
     if FORCE_TEST_TICKER:
         print(f"--- MODE: SURGICAL STRIKE ({FORCE_TEST_TICKER}) ---")
         try:
+            # FIX: Use Company class for specific ticker
             company = Company(FORCE_TEST_TICKER)
             filings = company.get_filings(form="8-K").latest(20)
             print(f"SUCCESS: Downloaded {len(filings)} filings.")
@@ -124,6 +124,7 @@ def run_rsa_sniper():
             print(f"Error finding ticker {FORCE_TEST_TICKER}: {e}")
             return
     else:
+        # LIVE MODE
         SCAN_DEPTH = 100 
         print(f"--- MODE: LIVE SENTRY (Last {SCAN_DEPTH} Files) ---")
         try:
@@ -139,8 +140,6 @@ def run_rsa_sniper():
     for filing in filings:
         # IDENTIFY TICKER
         ticker = "UNKNOWN"
-        
-        # FIX: If we forced a test, we KNOW the ticker.
         if FORCE_TEST_TICKER:
             ticker = FORCE_TEST_TICKER
         else:
@@ -155,7 +154,6 @@ def run_rsa_sniper():
             except:
                 pass
 
-        # Filter Seen (Only in Live Mode)
         if not FORCE_TEST_TICKER and filing.accession_number in seen_filings: continue
 
         count_checked += 1
@@ -181,24 +179,23 @@ def run_rsa_sniper():
                 price, _, _ = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 
-                # SILENCER: Ratio must exist
                 if ratio == 0: continue
 
                 show_alert = False
-                if FORCE_TEST_TICKER:
-                    show_alert = True
-                elif not is_expired and price > 0:
-                    show_alert = True
+                if FORCE_TEST_TICKER: show_alert = True
+                elif not is_expired and price > 0: show_alert = True
 
                 if show_alert:
+                    # --- PROFIT LOGIC FIX ---
                     if is_expired:
-                         header = "⛔ EXPIRED (TEST HIT)"
-                         calc = "Proof of concept"
+                         header = "⛔ EXPIRED (SPLIT DONE)"
+                         # HIDE PROFIT MATH for expired stocks because price is distorted
+                         calc = "Status: Split Complete. Price is Post-Split."
                     else:
-                         header = "🚨 LIVE RSA"
+                         header = "🚨 LIVE RSA FOUND"
                          est_value = price * ratio
                          profit = est_value - price
-                         calc = f"PROFIT: ${profit:.2f}"
+                         calc = f"PROFIT: ${profit:.2f} per share"
 
                     msg = (
                         f"{header}: {ticker}\n"
