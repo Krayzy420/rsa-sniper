@@ -114,12 +114,9 @@ def send_telegram_msg(message):
 def run_rsa_sniper():
     print(f"Connecting to SEC...")
     
-    # --- INTELLIGENT DOWNLOADING ---
     if FORCE_TEST_TICKER:
-        # SURGICAL STRIKE: FIX IS HERE
         print(f"--- MODE: SURGICAL STRIKE ({FORCE_TEST_TICKER}) ---")
         try:
-            # FIX: Use Company().get_filings() instead of get_filings(ticker=)
             company = Company(FORCE_TEST_TICKER)
             filings = company.get_filings(form="8-K").latest(20)
             print(f"SUCCESS: Downloaded {len(filings)} filings.")
@@ -127,7 +124,6 @@ def run_rsa_sniper():
             print(f"Error finding ticker {FORCE_TEST_TICKER}: {e}")
             return
     else:
-        # LIVE SENTRY
         SCAN_DEPTH = 100 
         print(f"--- MODE: LIVE SENTRY (Last {SCAN_DEPTH} Files) ---")
         try:
@@ -141,18 +137,23 @@ def run_rsa_sniper():
     count_checked = 0
 
     for filing in filings:
-        # Identify Ticker
+        # IDENTIFY TICKER
         ticker = "UNKNOWN"
-        try:
-            if filing.ticker: ticker = filing.ticker
-            company_lower = str(filing.company).lower()
-            for name_key, ticker_val in TARGET_MAP.items():
-                if name_key in company_lower:
-                    ticker = ticker_val
-                    break
-            ticker = str(ticker).upper()
-        except:
-            pass
+        
+        # FIX: If we forced a test, we KNOW the ticker.
+        if FORCE_TEST_TICKER:
+            ticker = FORCE_TEST_TICKER
+        else:
+            try:
+                if filing.ticker: ticker = filing.ticker
+                company_lower = str(filing.company).lower()
+                for name_key, ticker_val in TARGET_MAP.items():
+                    if name_key in company_lower:
+                        ticker = ticker_val
+                        break
+                ticker = str(ticker).upper()
+            except:
+                pass
 
         # Filter Seen (Only in Live Mode)
         if not FORCE_TEST_TICKER and filing.accession_number in seen_filings: continue
