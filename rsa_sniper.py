@@ -11,7 +11,8 @@ set_identity("Kevin Anderson kevinand83@gmail.com")
 VERIFIED_DATA = {
     "WTO": {"ratio": 5, "effective": "2026-02-17", "cutoff": "2026-02-13"}, 
     "ANY": {"ratio": 10, "effective": "2026-02-10", "cutoff": "2026-02-09"},
-    "ATPC": {"ratio": 50, "effective": "2026-02-10", "cutoff": "2026-02-09"}
+    "ATPC": {"ratio": 50, "effective": "2026-02-10", "cutoff": "2026-02-09"},
+    "HERZ": {"ratio": 10, "effective": "2026-02-09", "cutoff": "2026-02-06"} # Already passed
 }
 
 def get_live_price(ticker):
@@ -38,19 +39,23 @@ def run_rsa_sniper():
         
         # 1. THE ALARM LOGIC (Triggers if it's the Cutoff Day)
         is_cutoff_day = (now.date() == cutoff_date)
-        is_final_warning = (now.hour == 15 and now.minute >= 45) # 3:45 PM EST
+        # Final Warning triggers between 3:45 PM and 4:00 PM EST
+        is_final_warning = (now.hour == 15 and 45 <= now.minute < 60) 
 
-        status = "🟢 ACTIVE"
-        if is_cutoff_day and is_final_warning:
+        if now.date() > cutoff_date:
+            status = "⛔ EXPIRED/HELD"
+        elif is_cutoff_day and is_final_warning:
             status = "🚨 FINAL WARNING: BUY NOW"
         elif is_cutoff_day:
             status = "⚠️ CUTOFF TODAY"
+        else:
+            status = "🟢 ACTIVE"
 
         msg = (
             f"{status}: {ticker}\n"
             f"-------------------------\n"
-            f"PROFIT: ${profit:.2f}\n"
-            f"Price: ${price:.2f}\n"
+            f"EXPECTED PROFIT: ${profit:.2f}\n"
+            f"Current Price: ${price:.2f}\n"
             f"Split: 1-for-{info['ratio']}\n"
             f"Action: Buy 1 share before 4PM EST on {info['cutoff']}\n"
             f"Link: https://www.google.com/finance/quote/{ticker}:NASDAQ"
