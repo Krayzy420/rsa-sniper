@@ -73,7 +73,6 @@ def analyze_split_data(text):
         try:
             eff_date_obj = parser.parse(date_str)
             now = datetime.now()
-            # If date is in the past, IT IS EXPIRED.
             if eff_date_obj < now:
                 is_expired = True
         except:
@@ -84,10 +83,12 @@ def check_gold_status(text):
     if not text: return "NONE"
     clean_text = re.sub(r'\s+', ' ', text).lower()
 
+    # KILLER PHRASES
     bad_patterns = [r"cash (payment )?in lieu", r"paid in cash", r"rounded down"]
     if any(re.search(p, clean_text) for p in bad_patterns):
         return "BAD"
 
+    # GOLD PHRASES
     good_patterns = [
         r"round(ed|ing)? up",
         r"whole share",
@@ -116,7 +117,6 @@ def run_rsa_sniper():
     if FORCE_TEST_TICKER:
         print(f"--- MODE: SURGICAL STRIKE ({FORCE_TEST_TICKER}) ---")
         try:
-            # FIX: Use Company class for specific ticker
             company = Company(FORCE_TEST_TICKER)
             filings = company.get_filings(form="8-K").latest(20)
             print(f"SUCCESS: Downloaded {len(filings)} filings.")
@@ -124,7 +124,6 @@ def run_rsa_sniper():
             print(f"Error finding ticker {FORCE_TEST_TICKER}: {e}")
             return
     else:
-        # LIVE MODE
         SCAN_DEPTH = 100 
         print(f"--- MODE: LIVE SENTRY (Last {SCAN_DEPTH} Files) ---")
         try:
@@ -140,12 +139,16 @@ def run_rsa_sniper():
     for filing in filings:
         # IDENTIFY TICKER
         ticker = "UNKNOWN"
+        company_name = str(filing.company)
+        
         if FORCE_TEST_TICKER:
             ticker = FORCE_TEST_TICKER
         else:
             try:
                 if filing.ticker: ticker = filing.ticker
-                company_lower = str(filing.company).lower()
+                
+                # Fix Unknowns using Map
+                company_lower = company_name.lower()
                 for name_key, ticker_val in TARGET_MAP.items():
                     if name_key in company_lower:
                         ticker = ticker_val
@@ -157,7 +160,10 @@ def run_rsa_sniper():
         if not FORCE_TEST_TICKER and filing.accession_number in seen_filings: continue
 
         count_checked += 1
-        print(f"Scanning {ticker}...")
+        
+        # LOGGING FIX: Show Company Name if Ticker is Unknown
+        display_name = ticker if ticker != "UNKNOWN" else company_name
+        print(f"Scanning {display_name}...")
 
         try:
             main_text = filing.text()
@@ -186,22 +192,28 @@ def run_rsa_sniper():
                 elif not is_expired and price > 0: show_alert = True
 
                 if show_alert:
-                    # --- PROFIT LOGIC FIX ---
                     if is_expired:
                          header = "⛔ EXPIRED (SPLIT DONE)"
-                         # HIDE PROFIT MATH for expired stocks because price is distorted
-                         calc = "Status: Split Complete. Price is Post-Split."
+                         calc = "Price is Post-Split (History)"
                     else:
                          header = "🚨 LIVE RSA FOUND"
                          est_value = price * ratio
                          profit = est_value - price
                          calc = f"PROFIT: ${profit:.2f} per share"
 
+                    # If price is 0, give a search link
+                    if price == 0:
+                        search_url = f"https://www.google.com/search?q={company_name}+stock+price"
+                        price_line = f"Price: UNKNOWN ([Click to Find]({search_url}))"
+                    else:
+                        price_line = f"Price: ${price:.2f}"
+
                     msg = (
                         f"{header}: {ticker}\n"
                         f"-------------------------\n"
                         f"{calc}\n"
-                        f"Price: ${price:.2f}\n"
+                        f"-------------------------\n"
+                        f"{price_line}\n"
                         f"Split: 1-for-{ratio}\n"
                         f"Effective: {eff_date}\n"
                         f"Link: {filing.url}"
