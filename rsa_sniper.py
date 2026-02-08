@@ -116,16 +116,18 @@ def run_rsa_sniper():
     
     # --- INTELLIGENT DOWNLOADING ---
     if FORCE_TEST_TICKER:
-        # SURGICAL STRIKE: ONLY 8-K/6-K (No junk docs)
+        # SURGICAL STRIKE: FIX IS HERE
         print(f"--- MODE: SURGICAL STRIKE ({FORCE_TEST_TICKER}) ---")
         try:
-            filings = get_filings(ticker=FORCE_TEST_TICKER, form=["8-K", "6-K"]).latest(20)
+            # FIX: Use Company().get_filings() instead of get_filings(ticker=)
+            company = Company(FORCE_TEST_TICKER)
+            filings = company.get_filings(form="8-K").latest(20)
             print(f"SUCCESS: Downloaded {len(filings)} filings.")
         except Exception as e:
             print(f"Error finding ticker {FORCE_TEST_TICKER}: {e}")
             return
     else:
-        # LIVE SENTRY: Auto-Scan Last 100 Files
+        # LIVE SENTRY
         SCAN_DEPTH = 100 
         print(f"--- MODE: LIVE SENTRY (Last {SCAN_DEPTH} Files) ---")
         try:
@@ -178,18 +180,12 @@ def run_rsa_sniper():
                 price, _, _ = get_stock_data(ticker)
                 ratio, eff_date, is_expired = analyze_split_data(main_text)
                 
-                # --- THE SILENCER: MUST HAVE RATIO > 0 ---
-                if ratio == 0:
-                    print(f"Skipping {ticker} (Gold found, but Ratio is 0)")
-                    continue
+                # SILENCER: Ratio must exist
+                if ratio == 0: continue
 
-                # --- THE DECISION ---
                 show_alert = False
-                
-                # TEST MODE: Show History (Even if expired)
                 if FORCE_TEST_TICKER:
                     show_alert = True
-                # LIVE MODE: Show Only Active
                 elif not is_expired and price > 0:
                     show_alert = True
 
@@ -218,7 +214,6 @@ def run_rsa_sniper():
                     if not FORCE_TEST_TICKER:
                         save_seen_filing(filing.accession_number)
                     else:
-                        # TEST MODE: STOP AFTER 1 HIT (No Spam)
                         print("Test Hit Found. Stopping.")
                         return
 
