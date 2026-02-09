@@ -59,9 +59,8 @@ def send_telegram_msg(message):
 def run_rsa_sniper():
     print("SYSTEM ONLINE: Starting Sentry Scan...", flush=True)
     now = datetime.now()
-    # Mountain Time is roughly 2 hours behind Eastern (SEC/Market time)
-    # We use local server time (UTC) converted to Mountain for logic
-    mountain_hour = (now.hour - 7) % 24 # Approximate adjust if server is UTC
+    # Mountain Time adjustment (approximate)
+    mountain_hour = (now.hour - 7) % 24 
 
     seen_filings = load_seen_filings()
     
@@ -71,13 +70,11 @@ def run_rsa_sniper():
         cutoff_date = datetime.strptime(info["cutoff"], "%Y-%m-%d").date()
         
         # --- 1. NIGHT CHECK (11 PM MST) ---
-        # If it's late and price jumped, the split went through.
         if now.date() == cutoff_date and mountain_hour == 23:
              if price > (get_live_price(ticker) * 1.5):
-                 send_telegram_msg(f"✅ NIGHT CONFIRMATION: {ticker} split is processing at ${price:.2f}. Roundup likely successful.")
+                 send_telegram_msg(f"✅ NIGHT CONFIRMATION: {ticker} split is processing at ${price:.2f}.")
 
         # --- 2. CIL ABORT CHECK ---
-        # If it's the cutoff day, scan for "Cash" amendments
         if now.date() == cutoff_date:
             if check_for_last_minute_cil(ticker):
                 send_telegram_msg(f"🛑 ABORT: {ticker} switched to CASH IN LIEU. Get out now.")
@@ -86,15 +83,14 @@ def run_rsa_sniper():
         # --- 3. STATUS & MATH LOGIC ---
         if now.date() > cutoff_date:
             # POST-SPLIT (Held)
+            # If price is < $5.00, it means it hasn't updated for the weekend yet.
             if price < 5.00:
-                # Weekend/Lag Mode
                 status = "✅ SPLIT HELD (PENDING UPDATE)"
                 estimated_new_price = price * info["ratio"]
                 profit = estimated_new_price - price
                 price_display = f"${price:.2f} -> ~${estimated_new_price:.2f} (Est. Open)"
                 profit_label = "ESTIMATED GAIN"
             else:
-                # Active Market Mode
                 status = "✅ SPLIT CONFIRMED / HELD"
                 profit = price - (price / info["ratio"])
                 price_display = f"${price:.2f}"
