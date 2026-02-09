@@ -2,7 +2,7 @@ import os
 import requests
 import re
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timedelta
 from edgar import *
 
 # --- CONFIGURATION ---
@@ -58,10 +58,12 @@ def send_telegram_msg(message):
 
 def run_rsa_sniper():
     print("SYSTEM ONLINE: Starting Sentry Scan...", flush=True)
-    now = datetime.now()
-    # Mountain Time adjustment (approximate)
-    mountain_hour = (now.hour - 7) % 24 
-
+    
+    # --- MARKET CLOCK FIX ---
+    # Server is UTC. We subtract 5 hours to get approximate Eastern Time (EST)
+    # This ensures "Today" matches New York, not London.
+    market_now = datetime.now() - timedelta(hours=5)
+    
     seen_filings = load_seen_filings()
     
     for ticker, info in VERIFIED_DATA.items():
@@ -69,21 +71,21 @@ def run_rsa_sniper():
         price = get_live_price(ticker)
         cutoff_date = datetime.strptime(info["cutoff"], "%Y-%m-%d").date()
         
-        # --- 1. NIGHT CHECK (11 PM MST) ---
-        if now.date() == cutoff_date and mountain_hour == 23:
+        # --- 1. NIGHT CHECK (11 PM MST = ~1 AM EST) ---
+        # If market_now hour is 1 AM (which is 11 PM Mountain), check logic
+        if market_now.date() == cutoff_date and market_now.hour == 1: 
              if price > (get_live_price(ticker) * 1.5):
                  send_telegram_msg(f"✅ NIGHT CONFIRMATION: {ticker} split is processing at ${price:.2f}.")
 
         # --- 2. CIL ABORT CHECK ---
-        if now.date() == cutoff_date:
+        if market_now.date() == cutoff_date:
             if check_for_last_minute_cil(ticker):
                 send_telegram_msg(f"🛑 ABORT: {ticker} switched to CASH IN LIEU. Get out now.")
                 continue
 
         # --- 3. STATUS & MATH LOGIC ---
-        if now.date() > cutoff_date:
+        if market_now.date() > cutoff_date:
             # POST-SPLIT (Held)
-            # If price is < $5.00, it means it hasn't updated for the weekend yet.
             if price < 5.00:
                 status = "✅ SPLIT HELD (PENDING UPDATE)"
                 estimated_new_price = price * info["ratio"]
@@ -96,22 +98,22 @@ def run_rsa_sniper():
                 price_display = f"${price:.2f}"
                 profit_label = "REALIZED GAIN"
         
-        elif now.date() == cutoff_date:
-            # CUTOFF DAY
+        elif market_now.date() == cutoff_date:
+            # CUTOFF DAY (Monday Feb 9)
             status = "🚨 CUTOFF TODAY (VERIFIED ROUNDUP)"
             profit = (price * info["ratio"]) - price
             price_display = f"${price:.2f}"
             profit_label = "PROJECTED PROFIT"
             
         else:
-            # ACTIVE
+            # ACTIVE (Sunday Feb 8)
             status = "🟢 ACTIVE"
             profit = (price * info["ratio"]) - price
             price_display = f"${price:.2f}"
             profit_label = "PROJECTED PROFIT"
 
         # --- DUPLICATE GUARD ---
-        alert_id = f"{ticker}_{status}_{now.strftime('%Y-%m-%d')}"
+        alert_id = f"{ticker}_{status}_{market_now.strftime('%Y-%m-%d')}"
         
         if not FORCE_TEST and alert_id in seen_filings:
             print(f"   -> Skipped {ticker} (Already sent today)", flush=True)
